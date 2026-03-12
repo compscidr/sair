@@ -1,0 +1,14 @@
+# Binaries
+sair-device-source
+sair-proxy
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Firebase
+firebase-debug.log
