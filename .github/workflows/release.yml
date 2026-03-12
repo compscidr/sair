@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  release:
+    types: [created]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Build binaries
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p dist
+          go build -ldflags="-s -w" -o dist/sair-device-source ./cmd/sair-device-source
+          go build -ldflags="-s -w" -o dist/sair-proxy ./cmd/sair-proxy
+          cp tools/sair-acquire dist/
+          cp tools/sair-release dist/
+
+      - name: Archive
+        run: |
+          cd dist
+          tar czf ../sair-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz *
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" sair-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz

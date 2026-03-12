@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+option go_package = "github.com/compscidr/sair/proto/devicesource";
+
+import "google/protobuf/empty.proto";
+package devicesource;
+
+service DeviceSource {
+  rpc GetDevices(google.protobuf.Empty) returns (Devices) {}
+  rpc EnqueueCommand(Command) returns (stream CommandResult) {}
+  // Execute a command on a specific device identified by serial number
+  rpc ExecOnDevice(DeviceCommand) returns (stream CommandResult) {}
+  // Bidirectional raw byte forwarding to a device via the real ADB server.
+  // Used for protocols like sync: that the proxy cannot interpret.
+  rpc ForwardToDevice(stream ForwardData) returns (stream ForwardData) {}
+}
+
+message Devices {
+  repeated Device devices = 1;
+}
+
+message Device {
+  string serialno = 1;
+  string manufacturer = 2;
+  string model = 3;
+  int32 release = 4;
+  int32 sdk = 5;
+}
+
+message Command {
+  string cmd = 1;
+}
+
+message DeviceCommand {
+  string serial = 1;
+  string command = 2;
+  int32 timeout_seconds = 3;
+}
+
+message CommandResult {
+  int32 place_in_queue = 1;
+  string stdout = 2;
+  string stderr = 3;
+  int32 exit_code = 4;
+}
+
+message ForwardData {
+  oneof payload {
+    ForwardSetup setup = 1;
+    bytes data = 2;
+  }
+}
+
+message ForwardSetup {
+  string serial = 1;
+  string initial_command = 2;
+}
