@@ -24,11 +24,15 @@ func ReadRequest(r io.Reader) (string, error) {
 		return "", fmt.Errorf("invalid length hex: %s", string(lengthBytes))
 	}
 
+	if length < 0 || length > 1<<20 {
+		return "", fmt.Errorf("request length out of range: %d", length)
+	}
+
 	if length == 0 {
 		return "", nil
 	}
 
-	payload := make([]byte, length)
+	payload := make([]byte, int(length))
 	if _, err := io.ReadFull(r, payload); err != nil {
 		return "", err
 	}

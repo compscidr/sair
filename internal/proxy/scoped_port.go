@@ -110,11 +110,12 @@ func (m *ScopedPortManager) CreateScopedPort(lockID string, serials map[string]s
 // Release closes a scoped port and releases the lock on the orchestrator.
 func (m *ScopedPortManager) Release(lockID string) bool {
 	closed := m.CloseScopedPort(lockID)
-	if _, err := m.commandRouter.ReleaseLock(lockID); err != nil {
+	released, err := m.commandRouter.ReleaseLock(lockID)
+	if err != nil {
 		slog.Warn("failed to release lock on orchestrator", "lockId", lockID, "error", err)
 		return closed
 	}
-	return closed || true
+	return closed || released
 }
 
 // CloseScopedPort closes a scoped port without releasing the orchestrator lock.

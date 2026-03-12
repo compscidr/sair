@@ -108,7 +108,10 @@ func (r *CommandRouter) ListDevices() (*pb.DeviceList, error) {
 
 // ForwardToSession relays raw bytes between TCP streams and gRPC bidirectional stream.
 func (r *CommandRouter) ForwardToSession(sessionID, command string, tcpIn io.Reader, tcpOut io.Writer) error {
-	stream, err := r.client.ForwardToSession(r.ctx())
+	ctx, cancel := context.WithCancel(r.ctx())
+	defer cancel()
+
+	stream, err := r.client.ForwardToSession(ctx)
 	if err != nil {
 		return err
 	}
@@ -166,9 +169,16 @@ func (r *CommandRouter) ForwardToSession(sessionID, command string, tcpIn io.Rea
 		}
 	}()
 
-	// Wait for either direction
+	// Wait for first direction to finish, then cancel to tear down the other
+	err = <-done
+	cancel()
+	// Drain second goroutine
 	<-done
-	return nil
+
+	if err == io.EOF {
+		return nil
+	}
+	return err
 }
 
 func (r *CommandRouter) AcquireLock(serials map[string]struct{}, deadlineMinutes int64) (*LockResult, error) {

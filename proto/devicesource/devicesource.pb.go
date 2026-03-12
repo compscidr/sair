@@ -68,7 +68,7 @@ func (x *Devices) GetDevices() []*Device {
 
 type Device struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Serialno      string                 `protobuf:"bytes,1,opt,name=serialno,proto3" json:"serialno,omitempty"`
+	Serial        string                 `protobuf:"bytes,1,opt,name=serial,proto3" json:"serial,omitempty"`
 	Manufacturer  string                 `protobuf:"bytes,2,opt,name=manufacturer,proto3" json:"manufacturer,omitempty"`
 	Model         string                 `protobuf:"bytes,3,opt,name=model,proto3" json:"model,omitempty"`
 	Release       int32                  `protobuf:"varint,4,opt,name=release,proto3" json:"release,omitempty"`
@@ -107,9 +107,9 @@ func (*Device) Descriptor() ([]byte, []int) {
 	return file_proto_devicesource_devicesource_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *Device) GetSerialno() string {
+func (x *Device) GetSerial() string {
 	if x != nil {
-		return x.Serialno
+		return x.Serial
 	}
 	return ""
 }
@@ -454,9 +454,9 @@ const file_proto_devicesource_devicesource_proto_rawDesc = "" +
 	"\n" +
 	"%proto/devicesource/devicesource.proto\x12\fdevicesource\x1a\x1bgoogle/protobuf/empty.proto\"9\n" +
 	"\aDevices\x12.\n" +
-	"\adevices\x18\x01 \x03(\v2\x14.devicesource.DeviceR\adevices\"\x8a\x01\n" +
-	"\x06Device\x12\x1a\n" +
-	"\bserialno\x18\x01 \x01(\tR\bserialno\x12\"\n" +
+	"\adevices\x18\x01 \x03(\v2\x14.devicesource.DeviceR\adevices\"\x86\x01\n" +
+	"\x06Device\x12\x16\n" +
+	"\x06serial\x18\x01 \x01(\tR\x06serial\x12\"\n" +
 	"\fmanufacturer\x18\x02 \x01(\tR\fmanufacturer\x12\x14\n" +
 	"\x05model\x18\x03 \x01(\tR\x05model\x12\x18\n" +
 	"\arelease\x18\x04 \x01(\x05R\arelease\x12\x10\n" +

@@ -61,7 +61,8 @@ fi
 echo "sair-release: releasing lock ${LOCK_ID}..." >&2
 HTTP_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
     -H "x-api-key: ${API_KEY}" \
-    "${PROXY_URL}/release?lock_id=${LOCK_ID}") || {
+    -G --data-urlencode "lock_id=${LOCK_ID}" \
+    "${PROXY_URL}/release") || {
     echo "sair-release: ERROR: failed to contact proxy" >&2
     exit 1
 }

@@ -94,7 +94,7 @@ func (s *Server) getDeviceInfo(serial string) (*pb.Device, error) {
 	sdk, _ := strconv.Atoi(sdkStr)
 
 	return &pb.Device{
-		Serialno:     serial,
+		Serial:       serial,
 		Manufacturer: manufacturer,
 		Model:        model,
 		Release:      int32(release),
@@ -165,7 +165,7 @@ func (s *Server) streamProcess(ctx context.Context, cmd *exec.Cmd, timeoutSecond
 	}
 
 	// Stream stdout and stderr concurrently
-	done := make(chan error, 2)
+	readersDone := make(chan error, 2)
 
 	streamReader := func(reader io.Reader, isStderr bool) {
 		scanner := bufio.NewScanner(reader)
@@ -179,36 +179,50 @@ func (s *Server) streamProcess(ctx context.Context, cmd *exec.Cmd, timeoutSecond
 				result.Stdout = line
 			}
 			if err := stream.Send(result); err != nil {
-				done <- err
+				readersDone <- err
 				return
 			}
 		}
-		done <- scanner.Err()
+		readersDone <- scanner.Err()
 	}
 
 	go streamReader(stdout, false)
 	go streamReader(stderr, true)
 
-	// Wait for both readers
-	for i := 0; i < 2; i++ {
-		<-done
-	}
-
-	// Wait for process with timeout
+	// Monitor process completion, timeout, and ctx cancellation concurrently.
+	// Killing the process closes the pipes, which unblocks the readers.
 	waitDone := make(chan error, 1)
 	go func() {
 		waitDone <- cmd.Wait()
 	}()
 
+	timer := time.NewTimer(time.Duration(timeoutSeconds) * time.Second)
+	defer timer.Stop()
+
 	select {
-	case <-time.After(time.Duration(timeoutSeconds) * time.Second):
+	case <-timer.C:
 		cmd.Process.Kill()
 		slog.Warn("process timed out", "timeout", timeoutSeconds)
+		// Wait for readers to drain after kill
+		for i := 0; i < 2; i++ {
+			<-readersDone
+		}
+		<-waitDone
 		stream.Send(&pb.CommandResult{
 			Stderr:   fmt.Sprintf("Command timed out after %ds", timeoutSeconds),
 			ExitCode: -1,
 		})
+	case <-ctx.Done():
+		cmd.Process.Kill()
+		for i := 0; i < 2; i++ {
+			<-readersDone
+		}
+		<-waitDone
 	case err := <-waitDone:
+		// Process exited — wait for readers to finish draining output
+		for i := 0; i < 2; i++ {
+			<-readersDone
+		}
 		exitCode := 0
 		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
@@ -216,8 +230,6 @@ func (s *Server) streamProcess(ctx context.Context, cmd *exec.Cmd, timeoutSecond
 			}
 		}
 		stream.Send(&pb.CommandResult{ExitCode: int32(exitCode)})
-	case <-ctx.Done():
-		cmd.Process.Kill()
 	}
 
 	return nil

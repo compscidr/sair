@@ -20,7 +20,7 @@ message Devices {
 }
 
 message Device {
-  string serialno = 1;
+  string serial = 1;
   string manufacturer = 2;
   string model = 3;
   int32 release = 4;
