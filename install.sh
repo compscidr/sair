@@ -106,13 +106,19 @@ for bin in sair-device-source sair-proxy sair-acquire sair-release; do
     fi
 done
 
-# Check PATH
+# Ensure INSTALL_DIR is in PATH
 case ":${PATH}:" in
     *":${INSTALL_DIR}:"*) ;;
     *)
-        echo ""
-        echo "NOTE: ${INSTALL_DIR} is not in your PATH. Add it with:"
-        echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
+        if [[ -n "${GITHUB_PATH:-}" ]]; then
+            echo "$INSTALL_DIR" >> "$GITHUB_PATH"
+            echo ""
+            echo "Added ${INSTALL_DIR} to GITHUB_PATH."
+        else
+            echo ""
+            echo "NOTE: ${INSTALL_DIR} is not in your PATH. Add it with:"
+            echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
+        fi
         ;;
 esac
 
