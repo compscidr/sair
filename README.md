@@ -4,6 +4,50 @@ SAIR lets CI pipelines safely share physical Android devices. It provides
 device locking, ADB protocol translation, and per-runner isolation so multiple
 jobs never collide on the same device.
 
+## Quick Start
+
+### Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/compscidr/sair/main/install.sh | bash
+```
+
+This detects your OS and architecture, downloads the latest release, and
+installs all binaries to `~/.local/bin`.
+
+### Prerequisites
+
+- `adb` installed on the machine with Android devices
+- One or more Android devices connected via USB with USB debugging enabled
+
+### Run
+
+```bash
+# 1. Start a real ADB server on a non-default port (5038), so it doesn't
+#    conflict with the proxy which will own the standard port (5037).
+adb -P 5038 start-server
+
+# 2. Start the device source
+./sair-device-source
+
+# 3. Start the proxy (in another terminal)
+ORCHESTRATOR_ADDR=sair.run SAIR_API_KEY=your-api-key ORCHESTRATOR_TLS=true ./sair-proxy
+```
+
+### Use
+
+Acquire a device lock (blocks until one is available), run your tests, then
+release:
+
+```bash
+eval $(sair-acquire --url http://localhost:8550 --api-key your-api-key)
+./gradlew connectedCheck
+sair-release
+```
+
+After eval, stock `adb` automatically talks to the proxy through the scoped
+port and only sees the locked devices.
+
 ## Architecture
 
 ```
@@ -44,7 +88,7 @@ port — so stock `adb` on CI runners thinks it's talking to a real ADB server.
 
 **Orchestrator** manages device locks, sessions, and coordination. The proxy
 talks to it over gRPC. It does not connect to device sources or use ADB
-directly.
+directly. A hosted orchestrator is available at `sair.run`.
 
 **Tools** (`sair-acquire` / `sair-release`) are thin bash wrappers that call
 the proxy's HTTP API (port 8550) to acquire and release device locks.
@@ -54,69 +98,9 @@ the proxy's HTTP API (port 8550) to acquire and release device locks.
 gRPC calls, so CI tools like `./gradlew connectedCheck` work without any
 modification.
 
-## Install
+## Configuration
 
-The quickest way to install is with the install script:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/compscidr/sair/main/install.sh | bash
-```
-
-This detects your OS and architecture, downloads the latest release, and
-installs all binaries to `~/.local/bin`. You can customize the install:
-
-```bash
-# Install a specific version to a custom directory
-curl -fsSL https://raw.githubusercontent.com/compscidr/sair/main/install.sh | bash -s -- \
-  --version v0.1.0 \
-  --dir /usr/local/bin
-```
-
-Or download a release archive directly from the
-[releases page](https://github.com/compscidr/sair/releases).
-
-## Prerequisites
-
-- `adb` installed on every machine running a device source
-- One or more Android devices connected via USB with USB debugging enabled
-- A running orchestrator (see [Orchestrator](#orchestrator) below)
-
-## Building from Source
-
-Requires Go 1.24+.
-
-```bash
-go build ./cmd/sair-device-source
-go build ./cmd/sair-proxy
-```
-
-Or with Docker:
-
-```bash
-# Device source image
-docker build --target device-source -t sair-device-source .
-
-# Proxy image
-docker build --target proxy -t sair-proxy .
-```
-
-## Setup
-
-### 1. Device Source
-
-Run a device source on every machine that has phones attached. The device source
-needs access to a local ADB server.
-
-```bash
-# Start a real ADB server on a non-default port (5038) to avoid
-# conflicting with the proxy which will own port 5037.
-adb -P 5038 start-server
-
-# Start the device source
-./sair-device-source
-```
-
-Environment variables:
+### Device Source
 
 | Variable | Default | Description |
 |---|---|---|
@@ -129,30 +113,7 @@ Verify it's working:
 grpcurl -plaintext localhost:8080 devicesource.DeviceSource/GetDevices
 ```
 
-You can run device sources on multiple machines. Each one discovers the phones
-attached to that specific machine and registers with the proxy, giving CI access
-to your entire device pool.
-
-### 2. Orchestrator
-
-The orchestrator manages device locks, sessions, and coordination. It does not
-connect to device sources or use ADB — the proxy handles all device
-communication. The orchestrator is available as a hosted service or can be
-self-hosted.
-
-### 3. Proxy
-
-Run the proxy on a machine that is reachable by your CI runners and device
-sources. Device sources register with the proxy over gRPC, and the proxy
-connects to the orchestrator over gRPC for lock/session management.
-
-```bash
-export ORCHESTRATOR_ADDR=your-orchestrator:9090
-export SAIR_API_KEY=your-api-key
-./sair-proxy
-```
-
-Environment variables:
+### Proxy
 
 | Variable | Default | Description |
 |---|---|---|
@@ -172,7 +133,7 @@ The proxy exposes two ports:
 - **8550** (HTTP API) — `sair-acquire` and `sair-release` call this to manage
   locks
 
-### 4. Tools
+### Tools
 
 Copy `tools/sair-acquire` and `tools/sair-release` into your CI project or add
 this repo's `tools/` directory to `PATH`.
@@ -215,26 +176,8 @@ sair-release --lock-id <lock-id>
 
 ## Deployment
 
-SAIR components can run manually, as systemd services, or as Docker containers.
-In all cases the real ADB server runs on the host (not in a container) on a
-non-standard port.
-
-### Manual
-
-The simplest option — run everything directly on one machine:
-
-```bash
-# 1. Start a real ADB server on a non-default port
-adb -P 5038 start-server
-
-# 2. Start the device source
-DEVICE_SOURCE_PORT=8080 ADB_PORT=5038 ./sair-device-source
-
-# 3. Start the proxy (in another terminal)
-ORCHESTRATOR_ADDR=sair.run SAIR_API_KEY=your-api-key ORCHESTRATOR_TLS=true ./sair-proxy
-```
-
-See [Setup](#setup) above for detailed configuration options.
+For production use, run SAIR components as systemd services or Docker
+containers.
 
 ### Systemd Services
 
@@ -290,7 +233,6 @@ adb -P 5038 start-server
 The device source container needs to reach the host's ADB server:
 
 ```bash
-# Run device source container
 docker run -d --name sair-device-source \
   --network host \
   -e ADB_PORT=5038 \
@@ -408,6 +350,25 @@ A typical production setup with devices spread across multiple machines:
 From CI's perspective, all three devices appear as a single pool. A
 `sair-acquire` call locks whichever device(s) are free, regardless of which
 machine they're physically connected to.
+
+## Building from Source
+
+Requires Go 1.24+.
+
+```bash
+go build ./cmd/sair-device-source
+go build ./cmd/sair-proxy
+```
+
+Or with Docker:
+
+```bash
+# Device source image
+docker build --target device-source -t sair-device-source .
+
+# Proxy image
+docker build --target proxy -t sair-proxy .
+```
 
 ## License
 
