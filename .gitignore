@@ -1,6 +1,6 @@
-# Binaries
-sair-device-source
-sair-proxy
+# Binaries (at repo root only, not cmd/ source directories)
+/sair-device-source
+/sair-proxy
 
 # IDE
 .idea/
