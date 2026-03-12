@@ -9,17 +9,20 @@ set -euo pipefail
 
 VERSION=""
 INSTALL_DIR="${HOME}/.local/bin"
+INSTALL_SYSTEMD=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --version)  VERSION="$2";      shift 2 ;;
         --dir)      INSTALL_DIR="$2";   shift 2 ;;
+        --systemd)  INSTALL_SYSTEMD=true; shift ;;
         --help|-h)
-            echo "Usage: install.sh [--version VERSION] [--dir INSTALL_DIR]"
+            echo "Usage: install.sh [--version VERSION] [--dir INSTALL_DIR] [--systemd]"
             echo ""
             echo "Options:"
             echo "  --version VERSION   Version to install (default: latest release)"
             echo "  --dir DIR           Install directory (default: ~/.local/bin)"
+            echo "  --systemd           Install systemd service units (requires sudo)"
             exit 0
             ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
@@ -93,3 +96,37 @@ case ":${PATH}:" in
         echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
         ;;
 esac
+
+# Install systemd units if requested
+if [[ "$INSTALL_SYSTEMD" == "true" ]]; then
+    echo ""
+    echo "Installing systemd units..."
+
+    # Download systemd files from the repo
+    SYSTEMD_BASE="https://raw.githubusercontent.com/${REPO}/${VERSION}"
+    for unit in sair-adb-server.service sair-device-source.service sair-proxy.service; do
+        curl -fsSL "${SYSTEMD_BASE}/systemd/${unit}" -o "${TMP}/${unit}"
+        sudo install -m 644 "${TMP}/${unit}" "/etc/systemd/system/${unit}"
+        echo "  /etc/systemd/system/${unit}"
+    done
+
+    # Install env file templates (don't overwrite existing)
+    sudo mkdir -p /etc/sair
+    for env in device-source.env proxy.env; do
+        if [[ ! -f "/etc/sair/${env}" ]]; then
+            curl -fsSL "${SYSTEMD_BASE}/systemd/${env}" -o "${TMP}/${env}"
+            sudo install -m 600 "${TMP}/${env}" "/etc/sair/${env}"
+            echo "  /etc/sair/${env} (new)"
+        else
+            echo "  /etc/sair/${env} (exists, skipped)"
+        fi
+    done
+
+    sudo systemctl daemon-reload
+    echo ""
+    echo "Systemd units installed. Enable with:"
+    echo "  sudo systemctl enable --now sair-adb-server sair-device-source  # device source machine"
+    echo "  sudo systemctl enable --now sair-proxy                          # proxy machine"
+    echo ""
+    echo "Edit /etc/sair/proxy.env and /etc/sair/device-source.env to configure."
+fi

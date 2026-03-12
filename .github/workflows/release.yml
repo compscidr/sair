@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   build:
@@ -49,3 +50,50 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ github.event.release.tag_name }}" sair-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version
+        id: version
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push device-source
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: device-source
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/compscidr/sair-device-source:${{ steps.version.outputs.tag }}
+            ghcr.io/compscidr/sair-device-source:${{ steps.version.outputs.version }}
+            ghcr.io/compscidr/sair-device-source:latest
+
+      - name: Build and push proxy
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: proxy
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/compscidr/sair-proxy:${{ steps.version.outputs.tag }}
+            ghcr.io/compscidr/sair-proxy:${{ steps.version.outputs.version }}
+            ghcr.io/compscidr/sair-proxy:latest
