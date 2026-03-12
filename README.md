@@ -28,10 +28,11 @@ installs all binaries to `~/.local/bin`.
 adb -P 5038 start-server
 
 # 2. Start the device source
-./sair-device-source
+sair-device-source
 
 # 3. Start the proxy (in another terminal)
-ORCHESTRATOR_ADDR=sair.run SAIR_API_KEY=your-api-key ORCHESTRATOR_TLS=true ./sair-proxy
+export SAIR_API_KEY=your-api-key
+ORCHESTRATOR_ADDR=orchestrator.sair.run:9090 ORCHESTRATOR_TLS=true sair-proxy
 ```
 
 ### Use
@@ -40,7 +41,8 @@ Acquire a device lock (blocks until one is available), run your tests, then
 release:
 
 ```bash
-eval $(sair-acquire --url http://localhost:8550 --api-key your-api-key)
+ACQUIRE_OUTPUT=$(sair-acquire)
+eval "$ACQUIRE_OUTPUT"
 ./gradlew connectedCheck
 sair-release
 ```
