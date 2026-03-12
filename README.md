@@ -215,17 +215,33 @@ sair-release --lock-id <lock-id>
 
 ## Deployment
 
-SAIR components can run as systemd services or Docker containers. In both cases
-the real ADB server runs on the host (not in a container) on a non-standard port.
+SAIR components can run manually, as systemd services, or as Docker containers.
+In all cases the real ADB server runs on the host (not in a container) on a
+non-standard port.
+
+### Manual
+
+The simplest option — run everything directly on one machine:
+
+```bash
+# 1. Start a real ADB server on a non-default port
+adb -P 5038 start-server
+
+# 2. Start the device source
+DEVICE_SOURCE_PORT=8080 ADB_PORT=5038 ./sair-device-source
+
+# 3. Start the proxy (in another terminal)
+ORCHESTRATOR_ADDR=sair.run SAIR_API_KEY=your-api-key ORCHESTRATOR_TLS=true ./sair-proxy
+```
+
+See [Setup](#setup) above for detailed configuration options.
 
 ### Systemd Services
 
 Install binaries and systemd units:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/compscidr/sair/main/install.sh | bash -s -- \
-  --dir /usr/local/bin \
-  --systemd
+curl -fsSL https://raw.githubusercontent.com/compscidr/sair/main/install.sh | bash -s -- --systemd
 ```
 
 **Device source machine** — edit `/etc/sair/device-source.env`, then:
@@ -259,14 +275,21 @@ ghcr.io/compscidr/sair-device-source:latest
 ghcr.io/compscidr/sair-proxy:latest
 ```
 
-**Device source machine** — the real ADB server must run on the host (use the
-systemd unit or start it manually). The device source container needs to reach
-the host's ADB server:
+**Device source machine** — the real ADB server must run on the host (not in a
+container). Use the systemd unit to start it on boot, or start it manually:
 
 ```bash
-# Start real ADB server on the host
-adb -P 5038 start-server
+# Option A: Install the ADB systemd service (starts on boot)
+curl -fsSL https://raw.githubusercontent.com/compscidr/sair/main/install.sh | bash -s -- \
+  --systemd-adb-only
 
+# Option B: Start manually
+adb -P 5038 start-server
+```
+
+The device source container needs to reach the host's ADB server:
+
+```bash
 # Run device source container
 docker run -d --name sair-device-source \
   --network host \

@@ -40,6 +40,7 @@ jobs:
           go build -ldflags="-s -w" -o dist/sair-proxy ./cmd/sair-proxy
           cp tools/sair-acquire dist/
           cp tools/sair-release dist/
+          cp -r systemd dist/
 
       - name: Archive
         run: |
