@@ -104,6 +104,27 @@ func (c *AdbConnection) getVisibleDevices() []*pb.DeviceInfo {
 	return filtered
 }
 
+// writeOkay writes an OKAY response, logging any write errors.
+func (c *AdbConnection) writeOkay() {
+	if err := WriteOkay(c.conn); err != nil {
+		slog.Debug("write error", "remote", c.conn.RemoteAddr(), "error", err)
+	}
+}
+
+// writeOkayWithPayload writes an OKAY+payload response, logging any write errors.
+func (c *AdbConnection) writeOkayWithPayload(payload string) {
+	if err := WriteOkayWithPayload(c.conn, payload); err != nil {
+		slog.Debug("write error", "remote", c.conn.RemoteAddr(), "error", err)
+	}
+}
+
+// writeFail writes a FAIL response, logging any write errors.
+func (c *AdbConnection) writeFail(message string) {
+	if err := WriteFail(c.conn, message); err != nil {
+		slog.Debug("write error", "remote", c.conn.RemoteAddr(), "error", err)
+	}
+}
+
 func (c *AdbConnection) isSerialAllowed(serial string) bool {
 	if c.allowedSerials == nil {
 		return true
@@ -117,11 +138,11 @@ func (c *AdbConnection) handleHostCommand(request string) {
 
 	switch {
 	case request == "host:version":
-		WriteOkayWithPayload(c.conn, "0029")
+		c.writeOkayWithPayload("0029")
 
 	case request == "host:features" || request == "host:host-features" ||
 		(strings.HasPrefix(request, "host-serial:") && strings.HasSuffix(request, ":features")):
-		WriteOkayWithPayload(c.conn,
+		c.writeOkayWithPayload(
 			"cmd,stat_v2,ls_v2,fixed_push_mkdir,apex,abb,fixed_push_symlink_timestamp,abb_exec,remount_shell,track_app,sendrecv_v2,sendrecv_v2_brotli,sendrecv_v2_lz4,sendrecv_v2_zstd,sendrecv_v2_dry_run_send,openscreen_mdns")
 
 	case request == "host:devices" || request == "host:devices-short":
@@ -130,7 +151,7 @@ func (c *AdbConnection) handleHostCommand(request string) {
 		for _, d := range devices {
 			sb.WriteString(FormatDeviceLine(d.Serial))
 		}
-		WriteOkayWithPayload(c.conn, sb.String())
+		c.writeOkayWithPayload(sb.String())
 
 	case request == "host:devices-l":
 		devices := c.getVisibleDevices()
@@ -142,7 +163,7 @@ func (c *AdbConnection) handleHostCommand(request string) {
 				c.deviceListTracker.GetTransportID(d.Serial),
 			))
 		}
-		WriteOkayWithPayload(c.conn, sb.String())
+		c.writeOkayWithPayload(sb.String())
 
 	case request == "host:track-devices" || request == "host:track-devices-l":
 		c.keepAlive = true
@@ -162,7 +183,8 @@ func (c *AdbConnection) handleHostCommand(request string) {
 			}
 		}
 
-		WriteOkay(c.conn)
+		c.writeOkay()
+		// TODO: send updates when devices change instead of just the initial snapshot
 		// Send length-prefixed device list
 		data := []byte(sb.String())
 		lengthHex := fmt.Sprintf("%04X", len(data))
@@ -178,14 +200,14 @@ func (c *AdbConnection) handleHostCommand(request string) {
 		}
 
 	case request == "host:kill":
-		WriteOkay(c.conn)
+		c.writeOkay()
 		slog.Info("received host:kill — ignoring (proxy stays running)")
 
 	case strings.HasPrefix(request, "host:transport:"):
 		c.keepAlive = true
 		serial := strings.TrimPrefix(request, "host:transport:")
 		if !c.isSerialAllowed(serial) {
-			WriteFail(c.conn, "device "+serial+" not available — use sair-acquire")
+			c.writeFail("device " + serial + " not available — use sair-acquire")
 			return
 		}
 		c.handleTransport(serial)
@@ -194,7 +216,7 @@ func (c *AdbConnection) handleHostCommand(request string) {
 		c.keepAlive = true
 		devices := c.getVisibleDevices()
 		if len(devices) == 0 {
-			WriteFail(c.conn, "no devices available — use sair-acquire")
+			c.writeFail("no devices available — use sair-acquire")
 			return
 		}
 		c.handleTransport(devices[0].Serial)
@@ -203,7 +225,7 @@ func (c *AdbConnection) handleHostCommand(request string) {
 		c.keepAlive = true
 		serial := strings.TrimPrefix(request, "host:tport:serial:")
 		if !c.isSerialAllowed(serial) {
-			WriteFail(c.conn, "device "+serial+" not available — use sair-acquire")
+			c.writeFail("device " + serial + " not available — use sair-acquire")
 			return
 		}
 		c.handleTransportWithID(serial)
@@ -212,7 +234,7 @@ func (c *AdbConnection) handleHostCommand(request string) {
 		c.keepAlive = true
 		devices := c.getVisibleDevices()
 		if len(devices) == 0 {
-			WriteFail(c.conn, "no devices available — use sair-acquire")
+			c.writeFail("no devices available — use sair-acquire")
 			return
 		}
 		c.handleTransportWithID(devices[0].Serial)
@@ -223,16 +245,16 @@ func (c *AdbConnection) handleHostCommand(request string) {
 		transportID := 0
 		fmt.Sscanf(idStr, "%d", &transportID)
 		if transportID == 0 {
-			WriteFail(c.conn, "invalid transport id")
+			c.writeFail("invalid transport id")
 			return
 		}
 		serial := c.deviceListTracker.GetSerialByTransportID(transportID)
 		if serial == "" {
-			WriteFail(c.conn, fmt.Sprintf("device not found for transport id %d", transportID))
+			c.writeFail(fmt.Sprintf("device not found for transport id %d", transportID))
 			return
 		}
 		if !c.isSerialAllowed(serial) {
-			WriteFail(c.conn, "device "+serial+" not available — use sair-acquire")
+			c.writeFail("device " + serial + " not available — use sair-acquire")
 			return
 		}
 		c.handleTransport(serial)
@@ -241,12 +263,12 @@ func (c *AdbConnection) handleHostCommand(request string) {
 		rest := strings.TrimPrefix(request, "host-serial:")
 		waitIdx := strings.Index(rest, ":wait-for-")
 		if waitIdx <= 0 {
-			WriteFail(c.conn, "malformed host-serial wait-for command: "+request)
+			c.writeFail("malformed host-serial wait-for command: " + request)
 			return
 		}
 		serial := rest[:waitIdx]
 		if !c.isSerialAllowed(serial) {
-			WriteFail(c.conn, "device "+serial+" not available — use sair-acquire")
+			c.writeFail("device " + serial + " not available — use sair-acquire")
 			return
 		}
 		devices := c.getVisibleDevices()
@@ -258,11 +280,11 @@ func (c *AdbConnection) handleHostCommand(request string) {
 			}
 		}
 		if !found {
-			WriteFail(c.conn, "unknown device: "+serial)
+			c.writeFail("unknown device: " + serial)
 			return
 		}
-		WriteOkay(c.conn)
-		WriteOkay(c.conn)
+		c.writeOkay()
+		c.writeOkay()
 
 	case strings.HasPrefix(request, "host-serial:"):
 		rest := strings.TrimPrefix(request, "host-serial:")
@@ -270,31 +292,31 @@ func (c *AdbConnection) handleHostCommand(request string) {
 		if colonIdx > 0 {
 			command := rest[colonIdx+1:]
 			slog.Warn("unsupported host-serial command", "command", command)
-			WriteFail(c.conn, "unsupported command: "+request)
+			c.writeFail("unsupported command: " + request)
 		} else {
-			WriteFail(c.conn, "malformed host-serial command: "+request)
+			c.writeFail("malformed host-serial command: " + request)
 		}
 
 	case strings.HasPrefix(request, "host:"):
 		slog.Warn("unsupported host command", "request", request)
-		WriteFail(c.conn, "unsupported command: "+request)
+		c.writeFail("unsupported command: " + request)
 
 	default:
 		slog.Warn("unexpected command in HOST_MODE", "request", request)
-		WriteFail(c.conn, "expected host: command")
+		c.writeFail("expected host: command")
 	}
 }
 
 func (c *AdbConnection) handleTransportWithID(serial string) {
 	sid, _, err := c.sessionManager.AcquireRef(serial)
 	if err != nil {
-		WriteFail(c.conn, fmt.Sprintf("failed to acquire device %s: %v", serial, err))
+		c.writeFail(fmt.Sprintf("failed to acquire device %s: %v", serial, err))
 		return
 	}
 	c.transportSerial = serial
 	c.sessionID = sid
 	c.mode = transportMode
-	WriteOkay(c.conn)
+	c.writeOkay()
 
 	// tport protocol: send transport ID as 8-byte little-endian after OKAY
 	transportID := int64(c.deviceListTracker.GetTransportID(serial))
@@ -309,13 +331,13 @@ func (c *AdbConnection) handleTransportWithID(serial string) {
 func (c *AdbConnection) handleTransport(serial string) {
 	sid, _, err := c.sessionManager.AcquireRef(serial)
 	if err != nil {
-		WriteFail(c.conn, fmt.Sprintf("failed to acquire device %s: %v", serial, err))
+		c.writeFail(fmt.Sprintf("failed to acquire device %s: %v", serial, err))
 		return
 	}
 	c.transportSerial = serial
 	c.sessionID = sid
 	c.mode = transportMode
-	WriteOkay(c.conn)
+	c.writeOkay()
 	slog.Debug("transport", "serial", serial, "session", sid)
 }
 
@@ -323,14 +345,14 @@ func (c *AdbConnection) handleTransportCommand(request string) {
 	slog.Debug("TRANSPORT command", "serial", c.transportSerial, "request", request)
 
 	if c.sessionID == "" {
-		WriteFail(c.conn, "no active session")
+		c.writeFail("no active session")
 		return
 	}
 
 	switch {
 	case strings.HasPrefix(request, "shell:"):
 		command := strings.TrimPrefix(request, "shell:")
-		WriteOkay(c.conn)
+		c.writeOkay()
 
 		if err := c.commandRouter.ExecuteOnSession(c.sessionID, command, func(data []byte) {
 			WriteRaw(c.conn, data)
@@ -351,7 +373,7 @@ func (c *AdbConnection) handleTransportCommand(request string) {
 				c.sessionManager.EvictSession(c.transportSerial, c.sessionID)
 			}
 			// Try to send FAIL
-			WriteFail(c.conn, "forward failed: "+err.Error())
+			c.writeFail("forward failed: " + err.Error())
 		}
 	}
 }

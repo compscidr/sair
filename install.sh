@@ -3,12 +3,12 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/compscidr/sair/main/install.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/compscidr/sair/main/install.sh | bash -s -- --version v0.2.0 --dir ~/.local/bin
+#   curl -fsSL https://raw.githubusercontent.com/compscidr/sair/main/install.sh | bash -s -- --version v0.2.0 --dir /usr/local/bin
 #
 set -euo pipefail
 
 VERSION=""
-INSTALL_DIR="/usr/local/bin"
+INSTALL_DIR="${HOME}/.local/bin"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -19,7 +19,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Options:"
             echo "  --version VERSION   Version to install (default: latest release)"
-            echo "  --dir DIR           Install directory (default: /usr/local/bin)"
+            echo "  --dir DIR           Install directory (default: ~/.local/bin)"
             exit 0
             ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;

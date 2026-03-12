@@ -3,7 +3,6 @@ package devicesource
 import (
 	"bufio"
 	"context"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"log/slog"
@@ -121,6 +120,10 @@ func (s *Server) GetDevices(_ context.Context, _ *emptypb.Empty) (*pb.Devices, e
 	return devices, nil
 }
 
+// EnqueueCommand executes an arbitrary command via bash.
+// This is intentional — the caller is authenticated via the orchestrator's
+// API key, and the command is expected to be a full shell invocation
+// (e.g. "./gradlew connectedCheck"). Do not expose this endpoint without auth.
 func (s *Server) EnqueueCommand(req *pb.Command, stream pb.DeviceSource_EnqueueCommandServer) error {
 	return s.streamProcess(stream.Context(), exec.Command("bash", "-c", req.Cmd), 1800, stream)
 }
@@ -319,9 +322,7 @@ func readAdbOkay(conn net.Conn) error {
 		// Read the error message
 		lenBuf := make([]byte, 4)
 		if _, err := io.ReadFull(conn, lenBuf); err == nil {
-			length := binary.BigEndian.Uint16([]byte{0, 0}) // parse hex
-			if l, err := strconv.ParseInt(string(lenBuf), 16, 32); err == nil {
-				length = uint16(l)
+			if length, err := strconv.ParseInt(string(lenBuf), 16, 32); err == nil {
 				msg := make([]byte, length)
 				io.ReadFull(conn, msg)
 				return status.Errorf(codes.Internal, "ADB transport failed: %s: %s", string(resp), string(msg))

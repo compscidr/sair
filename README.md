@@ -52,13 +52,13 @@ curl -fsSL https://raw.githubusercontent.com/compscidr/sair/main/install.sh | ba
 ```
 
 This detects your OS and architecture, downloads the latest release, and
-installs all binaries to `/usr/local/bin`. You can customize the install:
+installs all binaries to `~/.local/bin`. You can customize the install:
 
 ```bash
 # Install a specific version to a custom directory
 curl -fsSL https://raw.githubusercontent.com/compscidr/sair/main/install.sh | bash -s -- \
   --version v0.1.0 \
-  --dir ~/.local/bin
+  --dir /usr/local/bin
 ```
 
 Or download a release archive directly from the
