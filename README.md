@@ -7,41 +7,52 @@ jobs never collide on the same device.
 ## Architecture
 
 ```
-┌──────────────┐   ┌──────────────┐
-│ DeviceSource │   │ DeviceSource │   (machines with USB-attached phones)
-│  + Phone A   │   │  + Phone B   │
-└──────┬───────┘   └──────┬───────┘
-       │  gRPC            │  gRPC
-       └────────┬─────────┘
-                ▼
-         ┌──────────────┐
-         │ Orchestrator │              (central coordinator)
-         └──────┬───────┘
-                │  gRPC
-                ▼
-         ┌──────────────┐
-         │    Proxy     │              (ADB protocol translator)
-         └──────┬───────┘
-                │  HTTP
-                ▼
-         ┌──────────────┐
-         │  CI / Tools  │              (sair-acquire / sair-release)
-         └──────────────┘
+         ┌──────────────────────────┐
+         │  DeviceSource            │
+         │  + Phone                 │
+         │  + real adb (port 5038)  │
+         └────────────▲─────────────┘
+                      │  gRPC
+                      ▼
+               ┌──────────────┐       ┌──────────────┐
+               │    Proxy     │◄gRPC─▶│ Orchestrator │
+               │  (port 5037) │       └──────────────┘
+               └──────────────┘        (locks & sessions)
+                  ▲       ▲
+           ADB    │       │  HTTP
+        (port 5037│       │(port 8550)
+                  │       │
+  ----------------+-------+---------------- CI runner --
+                  ▼       │
+         ┌────────────┐   │   ┌─────────────────┐
+         │ adb client │   └───│ sair-acquire /  │
+         │ (thinks it │       │ sair-release    │
+         │  talks to  │       └─────────────────┘
+         │  real adb) │
+         └────────────┘
 ```
 
 **DeviceSource** runs on each machine that has Android devices connected via
-USB. It discovers devices through `adb` and exposes them over gRPC. You can run
-device sources on as many machines as you like — they all register with a single
-orchestrator.
+USB. It discovers devices through a real `adb` server (running on a non-standard
+port like 5038) and registers with the proxy over gRPC. You can run device
+sources on as many machines as you like.
 
-**Proxy** translates the standard ADB protocol into orchestrator gRPC calls. CI
-runners talk to the proxy using stock `adb` — no custom tooling required on the
-runner side. The proxy does not need to be on the same machine as the device
-sources; it only needs network access to the orchestrator.
+**Proxy** is the central hub. Device sources register with it, and it discovers
+devices and routes commands through them. It talks to the orchestrator over gRPC
+for lock and session management. It listens on port 5037 — the standard ADB
+port — so stock `adb` on CI runners thinks it's talking to a real ADB server.
 
-**Tools** (`sair-acquire` / `sair-release`) are thin bash wrappers around the
-proxy HTTP API. They handle locking, waiting for availability, and exporting the
-environment variables that `adb` needs.
+**Orchestrator** manages device locks, sessions, and coordination. The proxy
+talks to it over gRPC. It does not connect to device sources or use ADB
+directly.
+
+**Tools** (`sair-acquire` / `sair-release`) are thin bash wrappers that call
+the proxy's HTTP API (port 8550) to acquire and release device locks.
+
+**ADB client** — stock `adb` on the CI runner connects to the proxy on port
+5037 (the standard ADB port). The proxy translates ADB protocol messages into
+gRPC calls, so CI tools like `./gradlew connectedCheck` work without any
+modification.
 
 ## Install
 
@@ -119,21 +130,21 @@ grpcurl -plaintext localhost:8080 devicesource.DeviceSource/GetDevices
 ```
 
 You can run device sources on multiple machines. Each one discovers the phones
-attached to that specific machine. They all connect to the same orchestrator,
-giving CI access to your entire device pool from a single proxy.
+attached to that specific machine and registers with the proxy, giving CI access
+to your entire device pool.
 
 ### 2. Orchestrator
 
-The orchestrator is the central coordinator that tracks all device sources and
-manages locks. It is available as a hosted service or can be self-hosted.
-
-The orchestrator needs to know where each device source is running. Refer to the
-orchestrator documentation for configuration details.
+The orchestrator manages device locks, sessions, and coordination. It does not
+connect to device sources or use ADB — the proxy handles all device
+communication. The orchestrator is available as a hosted service or can be
+self-hosted.
 
 ### 3. Proxy
 
-Run the proxy on a machine that is reachable by your CI runners. It connects to
-the orchestrator over gRPC.
+Run the proxy on a machine that is reachable by your CI runners and device
+sources. Device sources register with the proxy over gRPC, and the proxy
+connects to the orchestrator over gRPC for lock/session management.
 
 ```bash
 export ORCHESTRATOR_ADDR=your-orchestrator:9090
@@ -266,18 +277,31 @@ Key points about the workflow:
 A typical production setup with devices spread across multiple machines:
 
 ```
-┌─ Lab Machine A ────────────────┐
-│  Phone: Pixel 8 (ABC123)       │
-│  Phone: Pixel 7a (DEF456)      │
-│  adb -P 5038 start-server      │
-│  ./sair-device-source           │  ──► Orchestrator ◄── Proxy ◄── CI
-└────────────────────────────────┘                          │
-                                                            │
-┌─ Lab Machine B ────────────────┐                          │
-│  Phone: Samsung S24 (GHI789)   │                          │
-│  adb -P 5038 start-server      │                          │
-│  ./sair-device-source           │  ──► Orchestrator ◄─────┘
-└────────────────────────────────┘
+┌──────────────────────────┐   ┌──────────────────────────┐
+│  Machine A               │   │  Machine B               │
+│  DeviceSource            │   │  DeviceSource            │
+│  + Phone A, Phone B      │   │  + Phone C               │
+│  + real adb (port 5038)  │   │  + real adb (port 5038)  │
+└────────────▲─────────────┘   └────────────▲─────────────┘
+             │  gRPC                        │  gRPC
+             └──────────┬───────────────────┘
+                        ▼
+                 ┌──────────────┐       ┌──────────────┐
+                 │    Proxy     │◄gRPC─▶│ Orchestrator │
+                 │  (port 5037) │       └──────────────┘
+                 └──────────────┘        (locks & sessions)
+                    ▲       ▲
+             ADB    │       │  HTTP
+          (port 5037│       │(port 8550)
+                    │       │
+  ------------------+-------+-------------- CI runner --
+                    ▼       │
+           ┌────────────┐   │   ┌─────────────────┐
+           │ adb client │   └───│ sair-acquire /  │
+           │ (thinks it │       │ sair-release    │
+           │  talks to  │       └─────────────────┘
+           │  real adb) │
+           └────────────┘
 ```
 
 From CI's perspective, all three devices appear as a single pool. A
