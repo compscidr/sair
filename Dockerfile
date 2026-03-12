@@ -4,10 +4,12 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o /bin/sair-device-source ./cmd/sair-device-source
-RUN CGO_ENABLED=0 go build -o /bin/sair-proxy ./cmd/sair-proxy
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /bin/sair-device-source ./cmd/sair-device-source
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /bin/sair-proxy ./cmd/sair-proxy
 
 # Device source image
+# NOTE: The real adb server must run on the host (not in this container).
+# This container connects to the host's adb server via ADB_PORT.
 FROM alpine:3.21 AS device-source
 RUN apk add --no-cache android-tools
 COPY --from=builder /bin/sair-device-source /usr/local/bin/sair-device-source

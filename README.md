@@ -213,6 +213,107 @@ eval $(sair-acquire --url http://proxy-host:8550 --api-key my-key)
 sair-release --lock-id <lock-id>
 ```
 
+## Deployment
+
+SAIR components can run manually, as systemd services, or as Docker containers.
+In all cases the real ADB server runs on the host (not in a container) on a
+non-standard port.
+
+### Manual
+
+The simplest option — run everything directly on one machine:
+
+```bash
+# 1. Start a real ADB server on a non-default port
+adb -P 5038 start-server
+
+# 2. Start the device source
+DEVICE_SOURCE_PORT=8080 ADB_PORT=5038 ./sair-device-source
+
+# 3. Start the proxy (in another terminal)
+ORCHESTRATOR_ADDR=sair.run SAIR_API_KEY=your-api-key ORCHESTRATOR_TLS=true ./sair-proxy
+```
+
+See [Setup](#setup) above for detailed configuration options.
+
+### Systemd Services
+
+Install binaries and systemd units:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/compscidr/sair/main/install.sh | bash -s -- --systemd
+```
+
+**Device source machine** — edit `/etc/sair/device-source.env`, then:
+
+```bash
+sudo systemctl enable --now sair-adb-server sair-device-source
+```
+
+This starts the real ADB server on port 5038 and the device source, both on boot.
+
+**Proxy machine** — edit `/etc/sair/proxy.env` (set `ORCHESTRATOR_ADDR`,
+`SAIR_API_KEY`, etc.), then:
+
+```bash
+sudo systemctl enable --now sair-proxy
+```
+
+Check status and logs:
+
+```bash
+sudo systemctl status sair-device-source
+sudo journalctl -u sair-proxy -f
+```
+
+### Docker Containers
+
+Pre-built images are published to GitHub Container Registry on each release:
+
+```
+ghcr.io/compscidr/sair-device-source:latest
+ghcr.io/compscidr/sair-proxy:latest
+```
+
+**Device source machine** — the real ADB server must run on the host (not in a
+container). Use the systemd unit to start it on boot, or start it manually:
+
+```bash
+# Option A: Install the ADB systemd service (starts on boot)
+curl -fsSL https://raw.githubusercontent.com/compscidr/sair/main/install.sh | bash -s -- \
+  --systemd-adb-only
+
+# Option B: Start manually
+adb -P 5038 start-server
+```
+
+The device source container needs to reach the host's ADB server:
+
+```bash
+# Run device source container
+docker run -d --name sair-device-source \
+  --network host \
+  -e ADB_PORT=5038 \
+  ghcr.io/compscidr/sair-device-source:latest
+```
+
+`--network host` is the simplest option — it lets the container reach the host's
+ADB server on localhost:5038 and exposes the gRPC port directly.
+
+**Proxy machine:**
+
+```bash
+docker run -d --name sair-proxy \
+  -p 5037:5037 \
+  -p 8550:8550 \
+  -e ORCHESTRATOR_ADDR=your-orchestrator:9090 \
+  -e SAIR_API_KEY=your-api-key \
+  ghcr.io/compscidr/sair-proxy:latest
+```
+
+Pin to a specific version by replacing `latest` with a release tag (e.g.
+`v0.1.0`).
+
 ## Example: GitHub Actions Workflow
 
 ```yaml

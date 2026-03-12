@@ -1,0 +1,14 @@
+[Unit]
+Description=SAIR Device Source
+After=network.target sair-adb-server.service
+Requires=sair-adb-server.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/sair/device-source.env
+ExecStart=/usr/local/bin/sair-device-source
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,15 @@
+[Unit]
+Description=ADB server on non-standard port for SAIR
+After=network.target
+
+[Service]
+Type=forking
+Environment=ADB_PORT=5038
+ExecStartPre=-/usr/bin/adb -P ${ADB_PORT} kill-server
+ExecStart=/usr/bin/adb -P ${ADB_PORT} start-server
+ExecStop=/usr/bin/adb -P ${ADB_PORT} kill-server
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

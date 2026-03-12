@@ -9,22 +9,36 @@ set -euo pipefail
 
 VERSION=""
 INSTALL_DIR="${HOME}/.local/bin"
+INSTALL_SYSTEMD=false
+INSTALL_SYSTEMD_ADB_ONLY=false
+DIR_EXPLICITLY_SET=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --version)  VERSION="$2";      shift 2 ;;
-        --dir)      INSTALL_DIR="$2";   shift 2 ;;
+        --dir)      INSTALL_DIR="$2"; DIR_EXPLICITLY_SET=true; shift 2 ;;
+        --systemd)  INSTALL_SYSTEMD=true; shift ;;
+        --systemd-adb-only) INSTALL_SYSTEMD_ADB_ONLY=true; shift ;;
         --help|-h)
-            echo "Usage: install.sh [--version VERSION] [--dir INSTALL_DIR]"
+            echo "Usage: install.sh [--version VERSION] [--dir INSTALL_DIR] [--systemd] [--systemd-adb-only]"
             echo ""
             echo "Options:"
             echo "  --version VERSION   Version to install (default: latest release)"
             echo "  --dir DIR           Install directory (default: ~/.local/bin)"
+            echo "  --systemd           Install all systemd service units (requires sudo, Linux only)"
+            echo "  --systemd-adb-only  Install only the ADB server systemd unit (requires sudo, Linux only)"
             exit 0
             ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
+
+# When installing systemd units, default to /usr/local/bin (matches unit ExecStart paths)
+if [[ "$INSTALL_SYSTEMD" == "true" || "$INSTALL_SYSTEMD_ADB_ONLY" == "true" ]]; then
+    if [[ "$DIR_EXPLICITLY_SET" == "false" ]]; then
+        INSTALL_DIR="/usr/local/bin"
+    fi
+fi
 
 REPO="compscidr/sair"
 
@@ -35,6 +49,14 @@ case "$OS" in
     darwin) OS="darwin" ;;
     *)      echo "Unsupported OS: $OS" >&2; exit 1 ;;
 esac
+
+# systemd is Linux-only
+if [[ "$INSTALL_SYSTEMD" == "true" || "$INSTALL_SYSTEMD_ADB_ONLY" == "true" ]]; then
+    if [[ "$OS" != "linux" ]]; then
+        echo "Error: --systemd is only supported on Linux." >&2
+        exit 1
+    fi
+fi
 
 # Detect architecture
 ARCH="$(uname -m)"
@@ -93,3 +115,55 @@ case ":${PATH}:" in
         echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
         ;;
 esac
+
+# Install systemd units if requested
+if [[ "$INSTALL_SYSTEMD" == "true" || "$INSTALL_SYSTEMD_ADB_ONLY" == "true" ]]; then
+    echo ""
+    echo "Installing systemd units..."
+
+    # Determine which units to install
+    if [[ "$INSTALL_SYSTEMD_ADB_ONLY" == "true" && "$INSTALL_SYSTEMD" == "false" ]]; then
+        UNITS="sair-adb-server.service"
+    else
+        UNITS="sair-adb-server.service sair-device-source.service sair-proxy.service"
+    fi
+
+    # Use systemd files from the release archive (bundled in systemd/ directory)
+    for unit in $UNITS; do
+        if [[ -f "${TMP}/systemd/${unit}" ]]; then
+            sudo install -m 644 "${TMP}/systemd/${unit}" "/etc/systemd/system/${unit}"
+        else
+            echo "Warning: ${unit} not found in release archive, skipping" >&2
+        fi
+        echo "  /etc/systemd/system/${unit}"
+    done
+
+    # Install env file templates (don't overwrite existing)
+    sudo mkdir -p /etc/sair
+    ENVS="device-source.env proxy.env"
+    if [[ "$INSTALL_SYSTEMD_ADB_ONLY" == "true" && "$INSTALL_SYSTEMD" == "false" ]]; then
+        ENVS="device-source.env"
+    fi
+    for env in $ENVS; do
+        if [[ ! -f "/etc/sair/${env}" ]]; then
+            if [[ -f "${TMP}/systemd/${env}" ]]; then
+                sudo install -m 600 "${TMP}/systemd/${env}" "/etc/sair/${env}"
+                echo "  /etc/sair/${env} (new)"
+            fi
+        else
+            echo "  /etc/sair/${env} (exists, skipped)"
+        fi
+    done
+
+    sudo systemctl daemon-reload
+    echo ""
+    echo "Systemd units installed. Enable with:"
+    if [[ "$INSTALL_SYSTEMD_ADB_ONLY" == "true" && "$INSTALL_SYSTEMD" == "false" ]]; then
+        echo "  sudo systemctl enable --now sair-adb-server"
+    else
+        echo "  sudo systemctl enable --now sair-adb-server sair-device-source  # device source machine"
+        echo "  sudo systemctl enable --now sair-proxy                          # proxy machine"
+    fi
+    echo ""
+    echo "Edit /etc/sair/*.env to configure."
+fi
