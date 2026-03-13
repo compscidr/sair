@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"encoding/binary"
 	"io"
 	"testing"
 )
@@ -215,6 +216,79 @@ func TestProtocolExchange(t *testing.T) {
 	payload := string(resp[8:])
 	if payload != "0029" {
 		t.Errorf("expected payload 0029, got %q", payload)
+	}
+}
+
+func TestWriteShellV2Packet(t *testing.T) {
+	tests := []struct {
+		name string
+		id   byte
+		data []byte
+	}{
+		{"stdout", shellV2Stdout, []byte("hello world\n")},
+		{"stderr", shellV2Stderr, []byte("error msg\n")},
+		{"exit zero", shellV2Exit, []byte{0}},
+		{"exit nonzero", shellV2Exit, []byte{1}},
+		{"empty stdout", shellV2Stdout, []byte{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := WriteShellV2Packet(&buf, tt.id, tt.data); err != nil {
+				t.Fatal(err)
+			}
+
+			got := buf.Bytes()
+			if len(got) != 5+len(tt.data) {
+				t.Fatalf("packet length: got %d, want %d", len(got), 5+len(tt.data))
+			}
+			if got[0] != tt.id {
+				t.Errorf("packet ID: got %d, want %d", got[0], tt.id)
+			}
+			payloadLen := binary.LittleEndian.Uint32(got[1:5])
+			if payloadLen != uint32(len(tt.data)) {
+				t.Errorf("payload length: got %d, want %d", payloadLen, len(tt.data))
+			}
+			if !bytes.Equal(got[5:], tt.data) {
+				t.Errorf("payload: got %q, want %q", got[5:], tt.data)
+			}
+		})
+	}
+}
+
+func TestWriteShellV2MultiplePackets(t *testing.T) {
+	var buf bytes.Buffer
+
+	// Write stdout + stderr + exit sequence
+	if err := WriteShellV2Packet(&buf, shellV2Stdout, []byte("out\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteShellV2Packet(&buf, shellV2Stderr, []byte("err\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteShellV2Packet(&buf, shellV2Exit, []byte{0}); err != nil {
+		t.Fatal(err)
+	}
+
+	data := buf.Bytes()
+	// Packet 1: stdout "out\n" = 5 + 4 = 9 bytes
+	// Packet 2: stderr "err\n" = 5 + 4 = 9 bytes
+	// Packet 3: exit 0 = 5 + 1 = 6 bytes
+	wantLen := 9 + 9 + 6
+	if len(data) != wantLen {
+		t.Fatalf("total length: got %d, want %d", len(data), wantLen)
+	}
+
+	// Verify each packet ID
+	if data[0] != shellV2Stdout {
+		t.Errorf("packet 1 ID: got %d, want %d", data[0], shellV2Stdout)
+	}
+	if data[9] != shellV2Stderr {
+		t.Errorf("packet 2 ID: got %d, want %d", data[9], shellV2Stderr)
+	}
+	if data[18] != shellV2Exit {
+		t.Errorf("packet 3 ID: got %d, want %d", data[18], shellV2Exit)
 	}
 }
 
