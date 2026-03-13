@@ -256,19 +256,21 @@ func (s *Server) ForwardToDevice(stream pb.DeviceSource_ForwardToDeviceServer) e
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to connect to ADB server: %v", err)
 	}
-	defer conn.Close()
 
 	// Establish transport to the device
 	if err := sendAdbLtv(conn, "host:transport:"+setup.Serial); err != nil {
+		conn.Close()
 		return status.Errorf(codes.Internal, "failed to send transport: %v", err)
 	}
 	if err := readAdbOkay(conn); err != nil {
+		conn.Close()
 		return err
 	}
 	slog.Debug("ForwardToDevice: transport established", "serial", setup.Serial)
 
 	// Send the initial command (e.g., "sync:")
 	if err := sendAdbLtv(conn, setup.InitialCommand); err != nil {
+		conn.Close()
 		return status.Errorf(codes.Internal, "failed to send initial command: %v", err)
 	}
 	slog.Debug("ForwardToDevice: initial command sent", "serial", setup.Serial, "command", setup.InitialCommand)
@@ -323,16 +325,27 @@ func (s *Server) ForwardToDevice(stream pb.DeviceSource_ForwardToDeviceServer) e
 	// to unblock the other goroutine.
 	err = <-done
 	conn.Close()
-	<-done
+	err2 := <-done
 
-	slog.Info("ForwardToDevice: finished", "serial", setup.Serial, "error", err)
-	if err == nil || err == io.EOF {
-		return nil
+	// Return the first real error (prefer non-EOF/non-canceled).
+	resultErr := firstRealError(err, err2)
+	slog.Info("ForwardToDevice: finished", "serial", setup.Serial, "error", resultErr)
+	return resultErr
+}
+
+// firstRealError returns the first non-benign error, or nil if both are benign
+// (nil, io.EOF, or gRPC Canceled).
+func firstRealError(errs ...error) error {
+	for _, err := range errs {
+		if err == nil || err == io.EOF {
+			continue
+		}
+		if st, ok := status.FromError(err); ok && st.Code() == codes.Canceled {
+			continue
+		}
+		return err
 	}
-	if st, ok := status.FromError(err); ok && st.Code() == codes.Canceled {
-		return nil
-	}
-	return err
+	return nil
 }
 
 func sendAdbLtv(conn net.Conn, command string) error {

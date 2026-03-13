@@ -174,7 +174,6 @@ func (r *CommandRouter) ForwardToDevice(serial, command string, conn net.Conn) e
 	cancel()
 	conn.SetReadDeadline(time.Now())
 	<-done
-	conn.SetReadDeadline(time.Time{}) // reset deadline for any subsequent writes
 
 	if err == io.EOF {
 		return nil

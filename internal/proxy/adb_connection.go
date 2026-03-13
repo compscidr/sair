@@ -33,6 +33,8 @@ type AdbConnection struct {
 	mode            connectionMode
 	transportSerial string
 	keepAlive       bool
+	connCtx         context.Context
+	connCancel      context.CancelFunc
 }
 
 func NewAdbConnection(
@@ -51,9 +53,11 @@ func NewAdbConnection(
 }
 
 func (c *AdbConnection) Handle() {
+	c.connCtx, c.connCancel = context.WithCancel(context.Background())
 	remoteAddr := c.conn.RemoteAddr()
 	slog.Info("new ADB connection", "remote", remoteAddr)
 	defer func() {
+		c.connCancel()
 		c.conn.Close()
 		slog.Debug("ADB connection closed", "remote", remoteAddr)
 	}()
@@ -335,10 +339,7 @@ func (c *AdbConnection) handleTransportCommand(request string) {
 		command := strings.TrimPrefix(request, "shell:")
 		c.writeOkay()
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		if err := c.commandRouter.ExecuteOnDevice(ctx, c.transportSerial, command, func(data []byte) error {
+		if err := c.commandRouter.ExecuteOnDevice(c.connCtx, c.transportSerial, command, func(data []byte) error {
 			return WriteRaw(c.conn, data)
 		}); err != nil {
 			slog.Error("shell command failed", "serial", c.transportSerial, "error", err)
