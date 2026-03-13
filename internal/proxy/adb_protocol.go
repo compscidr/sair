@@ -47,9 +47,13 @@ func WriteOkay(w io.Writer) error {
 }
 
 // WriteOkayWithPayload writes an OKAY response with length-prefixed payload.
-// The entire message is sent as a single Write to avoid TCP fragmentation.
+// The entire message is sent in a single Write call to reduce the chance of
+// the ADB client seeing a partial response between syscalls.
 func WriteOkayWithPayload(w io.Writer, payload string) error {
 	data := []byte(payload)
+	if len(data) > 0xFFFF {
+		return fmt.Errorf("payload too large for ADB framing: %d bytes (max 65535)", len(data))
+	}
 	msg := make([]byte, 0, 4+4+len(data))
 	msg = append(msg, "OKAY"...)
 	msg = append(msg, fmt.Sprintf("%04X", len(data))...)
@@ -59,9 +63,13 @@ func WriteOkayWithPayload(w io.Writer, payload string) error {
 }
 
 // WriteFail writes a FAIL response with error message.
-// The entire message is sent as a single Write to avoid TCP fragmentation.
+// The entire message is sent in a single Write call to reduce the chance of
+// the ADB client seeing a partial response between syscalls.
 func WriteFail(w io.Writer, message string) error {
 	data := []byte(message)
+	if len(data) > 0xFFFF {
+		return fmt.Errorf("error message too large for ADB framing: %d bytes (max 65535)", len(data))
+	}
 	msg := make([]byte, 0, 4+4+len(data))
 	msg = append(msg, "FAIL"...)
 	msg = append(msg, fmt.Sprintf("%04X", len(data))...)

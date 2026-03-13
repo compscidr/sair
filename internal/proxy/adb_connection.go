@@ -191,7 +191,10 @@ func (c *AdbConnection) handleHostCommand(request string) {
 		msg := make([]byte, 0, len(lengthHex)+len(data))
 		msg = append(msg, lengthHex...)
 		msg = append(msg, data...)
-		c.conn.Write(msg)
+		if _, err := c.conn.Write(msg); err != nil {
+			slog.Debug("write error", "remote", c.conn.RemoteAddr(), "error", err)
+			return
+		}
 
 		// Hold connection open until client disconnects
 		buf := make([]byte, 1)
