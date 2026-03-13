@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	pb "github.com/compscidr/sair/proto/orchestrator"
 )
 
 // HTTPApi provides the HTTP API for the ADB proxy.
@@ -16,21 +18,24 @@ import (
 // device locks. The proxy handles all orchestrator communication and
 // opens scoped ADB ports for per-runner isolation.
 type HTTPApi struct {
-	scopedPortManager *ScopedPortManager
-	apiKey            string
-	server            *http.Server
+	scopedPortManager  *ScopedPortManager
+	deviceListTracker  *DeviceListTracker
+	apiKey             string
+	server             *http.Server
 }
 
-func NewHTTPApi(scopedPortManager *ScopedPortManager, apiKey string, port int, host string) *HTTPApi {
+func NewHTTPApi(scopedPortManager *ScopedPortManager, deviceListTracker *DeviceListTracker, apiKey string, port int, host string) *HTTPApi {
 	api := &HTTPApi{
-		scopedPortManager: scopedPortManager,
-		apiKey:            apiKey,
+		scopedPortManager:  scopedPortManager,
+		deviceListTracker:  deviceListTracker,
+		apiKey:             apiKey,
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /acquire", api.handleAcquire)
 	mux.HandleFunc("POST /release", api.handleRelease)
 	mux.HandleFunc("GET /status", api.handleStatus)
+	mux.HandleFunc("POST /internal/devices", api.handleRegisterDevices)
 
 	api.server = &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", host, port),
@@ -152,6 +157,46 @@ func (a *HTTPApi) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"scoped_ports": portInfos})
+}
+
+type deviceReport struct {
+	SourceAddr string       `json:"source_addr"`
+	Devices    []deviceInfo `json:"devices"`
+}
+
+type deviceInfo struct {
+	Serial       string `json:"serial"`
+	Manufacturer string `json:"manufacturer"`
+	Model        string `json:"model"`
+	Sdk          int32  `json:"sdk"`
+	Release      int32  `json:"release"`
+}
+
+func (a *HTTPApi) handleRegisterDevices(w http.ResponseWriter, r *http.Request) {
+	var report deviceReport
+	if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if report.SourceAddr == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "source_addr required"})
+		return
+	}
+
+	var pbDevices []*pb.DeviceInfo
+	for _, d := range report.Devices {
+		pbDevices = append(pbDevices, &pb.DeviceInfo{
+			Serial:       d.Serial,
+			Manufacturer: d.Manufacturer,
+			Model:        d.Model,
+			Sdk:          d.Sdk,
+			Release:      d.Release,
+		})
+	}
+
+	a.deviceListTracker.UpdateDevices(report.SourceAddr, pbDevices)
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

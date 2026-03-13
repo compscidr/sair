@@ -1505,6 +1505,86 @@ func (x *LockHeartbeatResponse) GetAlive() bool {
 	return false
 }
 
+type ReportDevicesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Devices       []*DeviceInfo          `protobuf:"bytes,1,rep,name=devices,proto3" json:"devices,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportDevicesRequest) Reset() {
+	*x = ReportDevicesRequest{}
+	mi := &file_proto_orchestrator_orchestrator_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportDevicesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportDevicesRequest) ProtoMessage() {}
+
+func (x *ReportDevicesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_orchestrator_orchestrator_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportDevicesRequest.ProtoReflect.Descriptor instead.
+func (*ReportDevicesRequest) Descriptor() ([]byte, []int) {
+	return file_proto_orchestrator_orchestrator_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *ReportDevicesRequest) GetDevices() []*DeviceInfo {
+	if x != nil {
+		return x.Devices
+	}
+	return nil
+}
+
+type ReportDevicesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportDevicesResponse) Reset() {
+	*x = ReportDevicesResponse{}
+	mi := &file_proto_orchestrator_orchestrator_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportDevicesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportDevicesResponse) ProtoMessage() {}
+
+func (x *ReportDevicesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_orchestrator_orchestrator_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportDevicesResponse.ProtoReflect.Descriptor instead.
+func (*ReportDevicesResponse) Descriptor() ([]byte, []int) {
+	return file_proto_orchestrator_orchestrator_proto_rawDescGZIP(), []int{26}
+}
+
 var File_proto_orchestrator_orchestrator_proto protoreflect.FileDescriptor
 
 const file_proto_orchestrator_orchestrator_proto_rawDesc = "" +
@@ -1605,7 +1685,10 @@ const file_proto_orchestrator_orchestrator_proto_rawDesc = "" +
 	"\x14LockHeartbeatRequest\x12\x17\n" +
 	"\alock_id\x18\x01 \x01(\tR\x06lockId\"-\n" +
 	"\x15LockHeartbeatResponse\x12\x14\n" +
-	"\x05alive\x18\x01 \x01(\bR\x05alive*d\n" +
+	"\x05alive\x18\x01 \x01(\bR\x05alive\"J\n" +
+	"\x14ReportDevicesRequest\x122\n" +
+	"\adevices\x18\x01 \x03(\v2\x18.orchestrator.DeviceInfoR\adevices\"\x17\n" +
+	"\x15ReportDevicesResponse*d\n" +
 	"\bJobState\x12\x15\n" +
 	"\x11JOB_STATE_UNKNOWN\x10\x00\x12\n" +
 	"\n" +
@@ -1614,7 +1697,7 @@ const file_proto_orchestrator_orchestrator_proto_rawDesc = "" +
 	"\tCOMPLETED\x10\x03\x12\n" +
 	"\n" +
 	"\x06FAILED\x10\x04\x12\r\n" +
-	"\tCANCELLED\x10\x052\xa3\a\n" +
+	"\tCANCELLED\x10\x052\xff\a\n" +
 	"\fOrchestrator\x12B\n" +
 	"\tSubmitJob\x12\x18.orchestrator.JobRequest\x1a\x17.orchestrator.JobOutput\"\x000\x01\x12I\n" +
 	"\fGetJobStatus\x12\x1e.orchestrator.JobStatusRequest\x1a\x17.orchestrator.JobStatus\"\x00\x12K\n" +
@@ -1626,7 +1709,8 @@ const file_proto_orchestrator_orchestrator_proto_rawDesc = "" +
 	"\x10ForwardToSession\x12 .orchestrator.SessionForwardData\x1a .orchestrator.SessionForwardData\"\x00(\x010\x01\x12T\n" +
 	"\vAcquireLock\x12 .orchestrator.AcquireLockRequest\x1a!.orchestrator.AcquireLockResponse\"\x00\x12T\n" +
 	"\vReleaseLock\x12 .orchestrator.ReleaseLockRequest\x1a!.orchestrator.ReleaseLockResponse\"\x00\x12Z\n" +
-	"\rLockHeartbeat\x12\".orchestrator.LockHeartbeatRequest\x1a#.orchestrator.LockHeartbeatResponse\"\x00B.Z,github.com/compscidr/sair/proto/orchestratorb\x06proto3"
+	"\rLockHeartbeat\x12\".orchestrator.LockHeartbeatRequest\x1a#.orchestrator.LockHeartbeatResponse\"\x00\x12Z\n" +
+	"\rReportDevices\x12\".orchestrator.ReportDevicesRequest\x1a#.orchestrator.ReportDevicesResponse\"\x00B.Z,github.com/compscidr/sair/proto/orchestratorb\x06proto3"
 
 var (
 	file_proto_orchestrator_orchestrator_proto_rawDescOnce sync.Once
@@ -1641,7 +1725,7 @@ func file_proto_orchestrator_orchestrator_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_orchestrator_orchestrator_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_proto_orchestrator_orchestrator_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
+var file_proto_orchestrator_orchestrator_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
 var file_proto_orchestrator_orchestrator_proto_goTypes = []any{
 	(JobState)(0),                 // 0: orchestrator.JobState
 	(*JobRequest)(nil),            // 1: orchestrator.JobRequest
@@ -1669,6 +1753,8 @@ var file_proto_orchestrator_orchestrator_proto_goTypes = []any{
 	(*ReleaseLockResponse)(nil),   // 23: orchestrator.ReleaseLockResponse
 	(*LockHeartbeatRequest)(nil),  // 24: orchestrator.LockHeartbeatRequest
 	(*LockHeartbeatResponse)(nil), // 25: orchestrator.LockHeartbeatResponse
+	(*ReportDevicesRequest)(nil),  // 26: orchestrator.ReportDevicesRequest
+	(*ReportDevicesResponse)(nil), // 27: orchestrator.ReportDevicesResponse
 }
 var file_proto_orchestrator_orchestrator_proto_depIdxs = []int32{
 	2,  // 0: orchestrator.JobRequest.requirements:type_name -> orchestrator.DeviceRequirements
@@ -1681,33 +1767,36 @@ var file_proto_orchestrator_orchestrator_proto_depIdxs = []int32{
 	2,  // 7: orchestrator.AcquireDeviceRequest.requirements:type_name -> orchestrator.DeviceRequirements
 	9,  // 8: orchestrator.AcquireDeviceResponse.device:type_name -> orchestrator.DeviceInfo
 	19, // 9: orchestrator.SessionForwardData.setup:type_name -> orchestrator.SessionForwardSetup
-	1,  // 10: orchestrator.Orchestrator.SubmitJob:input_type -> orchestrator.JobRequest
-	4,  // 11: orchestrator.Orchestrator.GetJobStatus:input_type -> orchestrator.JobStatusRequest
-	6,  // 12: orchestrator.Orchestrator.ListDevices:input_type -> orchestrator.ListDevicesRequest
-	10, // 13: orchestrator.Orchestrator.Ping:input_type -> orchestrator.PingRequest
-	12, // 14: orchestrator.Orchestrator.AcquireDevice:input_type -> orchestrator.AcquireDeviceRequest
-	14, // 15: orchestrator.Orchestrator.ExecuteOnSession:input_type -> orchestrator.SessionCommand
-	16, // 16: orchestrator.Orchestrator.ReleaseDevice:input_type -> orchestrator.ReleaseDeviceRequest
-	18, // 17: orchestrator.Orchestrator.ForwardToSession:input_type -> orchestrator.SessionForwardData
-	20, // 18: orchestrator.Orchestrator.AcquireLock:input_type -> orchestrator.AcquireLockRequest
-	22, // 19: orchestrator.Orchestrator.ReleaseLock:input_type -> orchestrator.ReleaseLockRequest
-	24, // 20: orchestrator.Orchestrator.LockHeartbeat:input_type -> orchestrator.LockHeartbeatRequest
-	3,  // 21: orchestrator.Orchestrator.SubmitJob:output_type -> orchestrator.JobOutput
-	5,  // 22: orchestrator.Orchestrator.GetJobStatus:output_type -> orchestrator.JobStatus
-	7,  // 23: orchestrator.Orchestrator.ListDevices:output_type -> orchestrator.DeviceList
-	11, // 24: orchestrator.Orchestrator.Ping:output_type -> orchestrator.PingResponse
-	13, // 25: orchestrator.Orchestrator.AcquireDevice:output_type -> orchestrator.AcquireDeviceResponse
-	15, // 26: orchestrator.Orchestrator.ExecuteOnSession:output_type -> orchestrator.SessionCommandResult
-	17, // 27: orchestrator.Orchestrator.ReleaseDevice:output_type -> orchestrator.ReleaseDeviceResponse
-	18, // 28: orchestrator.Orchestrator.ForwardToSession:output_type -> orchestrator.SessionForwardData
-	21, // 29: orchestrator.Orchestrator.AcquireLock:output_type -> orchestrator.AcquireLockResponse
-	23, // 30: orchestrator.Orchestrator.ReleaseLock:output_type -> orchestrator.ReleaseLockResponse
-	25, // 31: orchestrator.Orchestrator.LockHeartbeat:output_type -> orchestrator.LockHeartbeatResponse
-	21, // [21:32] is the sub-list for method output_type
-	10, // [10:21] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	9,  // 10: orchestrator.ReportDevicesRequest.devices:type_name -> orchestrator.DeviceInfo
+	1,  // 11: orchestrator.Orchestrator.SubmitJob:input_type -> orchestrator.JobRequest
+	4,  // 12: orchestrator.Orchestrator.GetJobStatus:input_type -> orchestrator.JobStatusRequest
+	6,  // 13: orchestrator.Orchestrator.ListDevices:input_type -> orchestrator.ListDevicesRequest
+	10, // 14: orchestrator.Orchestrator.Ping:input_type -> orchestrator.PingRequest
+	12, // 15: orchestrator.Orchestrator.AcquireDevice:input_type -> orchestrator.AcquireDeviceRequest
+	14, // 16: orchestrator.Orchestrator.ExecuteOnSession:input_type -> orchestrator.SessionCommand
+	16, // 17: orchestrator.Orchestrator.ReleaseDevice:input_type -> orchestrator.ReleaseDeviceRequest
+	18, // 18: orchestrator.Orchestrator.ForwardToSession:input_type -> orchestrator.SessionForwardData
+	20, // 19: orchestrator.Orchestrator.AcquireLock:input_type -> orchestrator.AcquireLockRequest
+	22, // 20: orchestrator.Orchestrator.ReleaseLock:input_type -> orchestrator.ReleaseLockRequest
+	24, // 21: orchestrator.Orchestrator.LockHeartbeat:input_type -> orchestrator.LockHeartbeatRequest
+	26, // 22: orchestrator.Orchestrator.ReportDevices:input_type -> orchestrator.ReportDevicesRequest
+	3,  // 23: orchestrator.Orchestrator.SubmitJob:output_type -> orchestrator.JobOutput
+	5,  // 24: orchestrator.Orchestrator.GetJobStatus:output_type -> orchestrator.JobStatus
+	7,  // 25: orchestrator.Orchestrator.ListDevices:output_type -> orchestrator.DeviceList
+	11, // 26: orchestrator.Orchestrator.Ping:output_type -> orchestrator.PingResponse
+	13, // 27: orchestrator.Orchestrator.AcquireDevice:output_type -> orchestrator.AcquireDeviceResponse
+	15, // 28: orchestrator.Orchestrator.ExecuteOnSession:output_type -> orchestrator.SessionCommandResult
+	17, // 29: orchestrator.Orchestrator.ReleaseDevice:output_type -> orchestrator.ReleaseDeviceResponse
+	18, // 30: orchestrator.Orchestrator.ForwardToSession:output_type -> orchestrator.SessionForwardData
+	21, // 31: orchestrator.Orchestrator.AcquireLock:output_type -> orchestrator.AcquireLockResponse
+	23, // 32: orchestrator.Orchestrator.ReleaseLock:output_type -> orchestrator.ReleaseLockResponse
+	25, // 33: orchestrator.Orchestrator.LockHeartbeat:output_type -> orchestrator.LockHeartbeatResponse
+	27, // 34: orchestrator.Orchestrator.ReportDevices:output_type -> orchestrator.ReportDevicesResponse
+	23, // [23:35] is the sub-list for method output_type
+	11, // [11:23] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_proto_orchestrator_orchestrator_proto_init() }
@@ -1725,7 +1814,7 @@ func file_proto_orchestrator_orchestrator_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_orchestrator_orchestrator_proto_rawDesc), len(file_proto_orchestrator_orchestrator_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   25,
+			NumMessages:   27,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

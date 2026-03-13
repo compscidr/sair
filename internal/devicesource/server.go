@@ -268,12 +268,16 @@ func (s *Server) ForwardToDevice(stream pb.DeviceSource_ForwardToDeviceServer) e
 	}
 	slog.Debug("ForwardToDevice: transport established", "serial", setup.Serial)
 
-	// Send the initial command (e.g., "sync:")
-	if err := sendAdbLtv(conn, setup.InitialCommand); err != nil {
-		conn.Close()
-		return status.Errorf(codes.Internal, "failed to send initial command: %v", err)
+	// Send the initial command if provided (e.g., "sync:").
+	// When empty, the proxy is tunneling everything after transport — the
+	// client's next message will be the command, relayed through the tunnel.
+	if setup.InitialCommand != "" {
+		if err := sendAdbLtv(conn, setup.InitialCommand); err != nil {
+			conn.Close()
+			return status.Errorf(codes.Internal, "failed to send initial command: %v", err)
+		}
+		slog.Debug("ForwardToDevice: initial command sent", "serial", setup.Serial, "command", setup.InitialCommand)
 	}
-	slog.Debug("ForwardToDevice: initial command sent", "serial", setup.Serial, "command", setup.InitialCommand)
 
 	// Bidirectional forwarding
 	done := make(chan error, 2)
@@ -306,14 +310,23 @@ func (s *Server) ForwardToDevice(stream pb.DeviceSource_ForwardToDeviceServer) e
 		for {
 			msg, err := stream.Recv()
 			if err != nil {
-				slog.Debug("ForwardToDevice: gRPC recv done", "serial", setup.Serial, "error", err)
+				slog.Info("ForwardToDevice: gRPC recv done", "serial", setup.Serial, "error", err)
+				// Client done sending — half-close the ADB write side so ADB
+				// knows all data has arrived, but keep the read side open for
+				// the response (e.g. exec: install-write result).
+				if err == io.EOF {
+					if tc, ok := conn.(*net.TCPConn); ok {
+						slog.Info("ForwardToDevice: half-closing ADB write side", "serial", setup.Serial)
+						tc.CloseWrite()
+					}
+				}
 				done <- err
 				return
 			}
 			if data := msg.GetData(); data != nil {
 				slog.Debug("ForwardToDevice: gRPC→ADB", "serial", setup.Serial, "bytes", len(data))
 				if _, err := conn.Write(data); err != nil {
-					slog.Debug("ForwardToDevice: ADB write failed", "serial", setup.Serial, "error", err)
+					slog.Info("ForwardToDevice: ADB write failed", "serial", setup.Serial, "error", err)
 					done <- err
 					return
 				}
@@ -321,14 +334,15 @@ func (s *Server) ForwardToDevice(stream pb.DeviceSource_ForwardToDeviceServer) e
 		}
 	}()
 
-	// Wait for either direction to finish, then close the ADB connection
-	// to unblock the other goroutine.
+	// Wait for the first direction to finish, then close the ADB connection
+	// and return. Returning from the method causes the gRPC framework to cancel
+	// the stream, which unblocks any goroutine blocked on stream.Recv/Send.
+	// conn.Close() unblocks any goroutine blocked on conn.Read/Write.
+	// Both goroutines will exit shortly after.
 	err = <-done
 	conn.Close()
-	err2 := <-done
 
-	// Return the first real error (prefer non-EOF/non-canceled).
-	resultErr := firstRealError(err, err2)
+	resultErr := firstRealError(err)
 	slog.Info("ForwardToDevice: finished", "serial", setup.Serial, "error", resultErr)
 	return resultErr
 }

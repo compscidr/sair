@@ -16,6 +16,7 @@ service Orchestrator {
   rpc AcquireLock(AcquireLockRequest) returns (AcquireLockResponse) {}
   rpc ReleaseLock(ReleaseLockRequest) returns (ReleaseLockResponse) {}
   rpc LockHeartbeat(LockHeartbeatRequest) returns (LockHeartbeatResponse) {}
+  rpc ReportDevices(ReportDevicesRequest) returns (ReportDevicesResponse) {}
 }
 
 message JobRequest {
@@ -167,3 +168,9 @@ message LockHeartbeatRequest {
 message LockHeartbeatResponse {
   bool alive = 1;
 }
+
+message ReportDevicesRequest {
+  repeated DeviceInfo devices = 1;
+}
+
+message ReportDevicesResponse {}
