@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -41,9 +42,7 @@ func CheckAndUpdate(binaryName string) {
 		return
 	}
 
-	current := strings.TrimPrefix(version.Version, "v")
-	target := strings.TrimPrefix(latest, "v")
-	if current == target {
+	if !isNewer(latest, version.Version) {
 		slog.Debug("auto-update: up to date", "version", version.Version)
 		return
 	}
@@ -58,6 +57,11 @@ func CheckAndUpdate(binaryName string) {
 	execPath, err = filepath.EvalSymlinks(execPath)
 	if err != nil {
 		slog.Warn("auto-update: cannot resolve symlinks", "error", err)
+		return
+	}
+
+	if !isWritable(filepath.Dir(execPath)) {
+		slog.Debug("auto-update: binary path not writable, skipping", "path", execPath)
 		return
 	}
 
@@ -114,6 +118,9 @@ func fetchLatestVersion() (string, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
 		return "", err
 	}
+	if release.TagName == "" {
+		return "", fmt.Errorf("GitHub API returned empty tag_name")
+	}
 	return release.TagName, nil
 }
 
@@ -157,6 +164,58 @@ func downloadAndReplace(tag, binaryName, execPath string) error {
 			return atomicReplace(execPath, tr, hdr.FileInfo().Mode())
 		}
 	}
+}
+
+// isNewer returns true if latest is a strictly greater semver than current.
+// Both may optionally have a "v" prefix. Returns false if either is unparseable.
+func isNewer(latest, current string) bool {
+	parse := func(s string) (major, minor, patch int, ok bool) {
+		s = strings.TrimPrefix(s, "v")
+		parts := strings.SplitN(s, ".", 3)
+		if len(parts) != 3 {
+			return 0, 0, 0, false
+		}
+		var err error
+		major, err = strconv.Atoi(parts[0])
+		if err != nil {
+			return 0, 0, 0, false
+		}
+		minor, err = strconv.Atoi(parts[1])
+		if err != nil {
+			return 0, 0, 0, false
+		}
+		patch, err = strconv.Atoi(parts[2])
+		if err != nil {
+			return 0, 0, 0, false
+		}
+		return major, minor, patch, true
+	}
+
+	lMaj, lMin, lPat, lok := parse(latest)
+	cMaj, cMin, cPat, cok := parse(current)
+	if !lok || !cok {
+		return false
+	}
+
+	if lMaj != cMaj {
+		return lMaj > cMaj
+	}
+	if lMin != cMin {
+		return lMin > cMin
+	}
+	return lPat > cPat
+}
+
+// isWritable checks whether the directory is writable by attempting to create a temp file.
+func isWritable(dir string) bool {
+	f, err := os.CreateTemp(dir, ".sair-write-test-*")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	f.Close()
+	os.Remove(name)
+	return true
 }
 
 func atomicReplace(targetPath string, src io.Reader, mode os.FileMode) error {
