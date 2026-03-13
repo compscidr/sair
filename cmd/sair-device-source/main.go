@@ -10,12 +10,18 @@ import (
 	"syscall"
 
 	"github.com/compscidr/sair/internal/devicesource"
+	"github.com/compscidr/sair/internal/updater"
+	"github.com/compscidr/sair/internal/version"
 	pb "github.com/compscidr/sair/proto/devicesource"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 )
 
 func main() {
+	updater.CheckAndUpdate("sair-device-source")
+
+	slog.Info("DeviceSource starting...", "version", version.Version)
+
 	port := 8080
 	if v := os.Getenv("DEVICE_SOURCE_PORT"); v != "" {
 		if p, err := strconv.Atoi(v); err == nil {

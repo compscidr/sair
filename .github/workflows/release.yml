@@ -35,9 +35,11 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          LDFLAGS="-s -w -X github.com/compscidr/sair/internal/version.Version=${VERSION}"
           mkdir -p dist
-          go build -ldflags="-s -w" -o dist/sair-device-source ./cmd/sair-device-source
-          go build -ldflags="-s -w" -o dist/sair-proxy ./cmd/sair-proxy
+          go build -ldflags="${LDFLAGS}" -o dist/sair-device-source ./cmd/sair-device-source
+          go build -ldflags="${LDFLAGS}" -o dist/sair-proxy ./cmd/sair-proxy
           cp tools/sair-acquire dist/
           cp tools/sair-release dist/
           cp -r systemd dist/
@@ -82,6 +84,8 @@ jobs:
           target: device-source
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            VERSION=${{ steps.version.outputs.tag }}
           tags: |
             ghcr.io/compscidr/sair-device-source:${{ steps.version.outputs.tag }}
             ghcr.io/compscidr/sair-device-source:${{ steps.version.outputs.version }}
@@ -94,6 +98,8 @@ jobs:
           target: proxy
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            VERSION=${{ steps.version.outputs.tag }}
           tags: |
             ghcr.io/compscidr/sair-proxy:${{ steps.version.outputs.tag }}
             ghcr.io/compscidr/sair-proxy:${{ steps.version.outputs.version }}

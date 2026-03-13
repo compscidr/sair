@@ -9,6 +9,8 @@ import (
 	"syscall"
 
 	"github.com/compscidr/sair/internal/proxy"
+	"github.com/compscidr/sair/internal/updater"
+	"github.com/compscidr/sair/internal/version"
 )
 
 func main() {
@@ -21,7 +23,9 @@ func main() {
 	heartbeatInterval := envInt64("HEARTBEAT_INTERVAL_SECONDS", 60)
 	orchestratorTLS := envBool("ORCHESTRATOR_TLS")
 
-	slog.Info("ADB Proxy starting...")
+	updater.CheckAndUpdate("sair-proxy")
+
+	slog.Info("ADB Proxy starting...", "version", version.Version)
 	slog.Info("config",
 		"adb_port", port,
 		"http_api", httpAPIHost+":"+strconv.Itoa(httpAPIPort),
