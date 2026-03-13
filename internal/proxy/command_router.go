@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net"
 	"time"
 
 	dspb "github.com/compscidr/sair/proto/devicesource"
@@ -74,12 +75,12 @@ func (r *CommandRouter) ctxWithTimeout(d time.Duration) (context.Context, contex
 
 // ADB operations — go directly to the device-source
 
-func (r *CommandRouter) ExecuteOnDevice(serial, command string, onOutput func([]byte)) error {
+func (r *CommandRouter) ExecuteOnDevice(ctx context.Context, serial, command string, onOutput func([]byte) error) error {
 	req := &dspb.DeviceCommand{
 		Serial:  serial,
 		Command: command,
 	}
-	stream, err := r.dsClient.ExecOnDevice(context.Background(), req)
+	stream, err := r.dsClient.ExecOnDevice(ctx, req)
 	if err != nil {
 		return err
 	}
@@ -92,16 +93,20 @@ func (r *CommandRouter) ExecuteOnDevice(serial, command string, onOutput func([]
 			return err
 		}
 		if result.Stdout != "" {
-			onOutput([]byte(result.Stdout))
+			if err := onOutput([]byte(result.Stdout)); err != nil {
+				return err
+			}
 		}
 		if result.Stderr != "" {
-			onOutput([]byte(result.Stderr))
+			if err := onOutput([]byte(result.Stderr)); err != nil {
+				return err
+			}
 		}
 	}
 }
 
-// ForwardToDevice relays raw bytes between TCP streams and the device-source's ForwardToDevice gRPC stream.
-func (r *CommandRouter) ForwardToDevice(serial, command string, tcpIn io.Reader, tcpOut io.Writer) error {
+// ForwardToDevice relays raw bytes between a TCP connection and the device-source's ForwardToDevice gRPC stream.
+func (r *CommandRouter) ForwardToDevice(serial, command string, conn net.Conn) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -129,7 +134,7 @@ func (r *CommandRouter) ForwardToDevice(serial, command string, tcpIn io.Reader,
 	go func() {
 		buf := make([]byte, 32768)
 		for {
-			n, err := tcpIn.Read(buf)
+			n, err := conn.Read(buf)
 			if err != nil {
 				stream.CloseSend()
 				done <- err
@@ -155,7 +160,7 @@ func (r *CommandRouter) ForwardToDevice(serial, command string, tcpIn io.Reader,
 				return
 			}
 			if data := resp.GetData(); data != nil {
-				if _, err := tcpOut.Write(data); err != nil {
+				if _, err := conn.Write(data); err != nil {
 					done <- err
 					return
 				}
@@ -163,11 +168,13 @@ func (r *CommandRouter) ForwardToDevice(serial, command string, tcpIn io.Reader,
 		}
 	}()
 
-	// Wait for first direction to finish, then cancel to tear down the other
+	// Wait for first direction to finish, then tear down the other.
+	// cancel() unblocks gRPC Recv/Send; SetReadDeadline unblocks TCP Read.
 	err = <-done
 	cancel()
-	// Drain second goroutine
+	conn.SetReadDeadline(time.Now())
 	<-done
+	conn.SetReadDeadline(time.Time{}) // reset deadline for any subsequent writes
 
 	if err == io.EOF {
 		return nil

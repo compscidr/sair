@@ -319,10 +319,20 @@ func (s *Server) ForwardToDevice(stream pb.DeviceSource_ForwardToDeviceServer) e
 		}
 	}()
 
-	// Wait for either direction to finish
+	// Wait for either direction to finish, then close the ADB connection
+	// to unblock the other goroutine.
 	err = <-done
+	conn.Close()
+	<-done
+
 	slog.Info("ForwardToDevice: finished", "serial", setup.Serial, "error", err)
-	return nil
+	if err == nil || err == io.EOF {
+		return nil
+	}
+	if st, ok := status.FromError(err); ok && st.Code() == codes.Canceled {
+		return nil
+	}
+	return err
 }
 
 func sendAdbLtv(conn net.Conn, command string) error {

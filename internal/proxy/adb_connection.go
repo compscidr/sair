@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -334,8 +335,11 @@ func (c *AdbConnection) handleTransportCommand(request string) {
 		command := strings.TrimPrefix(request, "shell:")
 		c.writeOkay()
 
-		if err := c.commandRouter.ExecuteOnDevice(c.transportSerial, command, func(data []byte) {
-			WriteRaw(c.conn, data)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		if err := c.commandRouter.ExecuteOnDevice(ctx, c.transportSerial, command, func(data []byte) error {
+			return WriteRaw(c.conn, data)
 		}); err != nil {
 			slog.Error("shell command failed", "serial", c.transportSerial, "error", err)
 		}
@@ -344,7 +348,7 @@ func (c *AdbConnection) handleTransportCommand(request string) {
 		// Forward unsupported commands (sync:, reboot:, etc.) to the
 		// real ADB server via bidirectional gRPC streaming through device-source.
 		slog.Info("forwarding transport command to device-source", "serial", c.transportSerial, "request", request)
-		if err := c.commandRouter.ForwardToDevice(c.transportSerial, request, c.conn, c.conn); err != nil {
+		if err := c.commandRouter.ForwardToDevice(c.transportSerial, request, c.conn); err != nil {
 			slog.Error("forward failed", "serial", c.transportSerial, "request", request, "error", err)
 			c.writeFail("forward failed: " + err.Error())
 		}
