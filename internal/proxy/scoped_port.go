@@ -27,7 +27,6 @@ type ScopedPort struct {
 type ScopedPortManager struct {
 	mu                     sync.Mutex
 	commandRouter          *CommandRouter
-	sessionManager         *SessionManager
 	deviceListTracker      *DeviceListTracker
 	heartbeatIntervalSecs  int64
 	scopedPorts            map[string]*ScopedPort
@@ -35,7 +34,6 @@ type ScopedPortManager struct {
 
 func NewScopedPortManager(
 	commandRouter *CommandRouter,
-	sessionManager *SessionManager,
 	deviceListTracker *DeviceListTracker,
 	heartbeatIntervalSecs int64,
 ) *ScopedPortManager {
@@ -44,7 +42,6 @@ func NewScopedPortManager(
 	}
 	return &ScopedPortManager{
 		commandRouter:         commandRouter,
-		sessionManager:        sessionManager,
 		deviceListTracker:     deviceListTracker,
 		heartbeatIntervalSecs: heartbeatIntervalSecs,
 		scopedPorts:           make(map[string]*ScopedPort),
@@ -185,7 +182,7 @@ func (m *ScopedPortManager) runAcceptLoop(sp *ScopedPort) {
 				slog.Warn("failed to set TCP_NODELAY", "remote", conn.RemoteAddr(), "error", err)
 			}
 		}
-		adbConn := NewAdbConnection(conn, m.commandRouter, m.sessionManager, m.deviceListTracker, sp.Serials)
+		adbConn := NewAdbConnection(conn, m.commandRouter, m.deviceListTracker, sp.Serials)
 		go adbConn.Handle()
 	}
 }

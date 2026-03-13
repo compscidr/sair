@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -24,29 +25,27 @@ const (
 //
 //	HOST_MODE → (host:transport:<serial>) → TRANSPORT_MODE
 type AdbConnection struct {
-	conn             net.Conn
-	commandRouter    *CommandRouter
-	sessionManager   *SessionManager
+	conn              net.Conn
+	commandRouter     *CommandRouter
 	deviceListTracker *DeviceListTracker
-	allowedSerials   map[string]struct{} // nil = all, empty = none
+	allowedSerials    map[string]struct{} // nil = all, empty = none
 
 	mode            connectionMode
 	transportSerial string
-	sessionID       string
 	keepAlive       bool
+	connCtx         context.Context
+	connCancel      context.CancelFunc
 }
 
 func NewAdbConnection(
 	conn net.Conn,
 	commandRouter *CommandRouter,
-	sessionManager *SessionManager,
 	deviceListTracker *DeviceListTracker,
 	allowedSerials map[string]struct{},
 ) *AdbConnection {
 	return &AdbConnection{
 		conn:              conn,
 		commandRouter:     commandRouter,
-		sessionManager:    sessionManager,
 		deviceListTracker: deviceListTracker,
 		allowedSerials:    allowedSerials,
 		mode:              hostMode,
@@ -54,13 +53,11 @@ func NewAdbConnection(
 }
 
 func (c *AdbConnection) Handle() {
+	c.connCtx, c.connCancel = context.WithCancel(context.Background())
 	remoteAddr := c.conn.RemoteAddr()
 	slog.Info("new ADB connection", "remote", remoteAddr)
 	defer func() {
-		// Decrement session refcount on connection close
-		if c.sessionID != "" && c.transportSerial != "" {
-			c.sessionManager.ReleaseRef(c.transportSerial, c.sessionID)
-		}
+		c.connCancel()
 		c.conn.Close()
 		slog.Debug("ADB connection closed", "remote", remoteAddr)
 	}()
@@ -313,13 +310,7 @@ func (c *AdbConnection) handleHostCommand(request string) {
 }
 
 func (c *AdbConnection) handleTransportWithID(serial string) {
-	sid, _, err := c.sessionManager.AcquireRef(serial)
-	if err != nil {
-		c.writeFail(fmt.Sprintf("failed to acquire device %s: %v", serial, err))
-		return
-	}
 	c.transportSerial = serial
-	c.sessionID = sid
 	c.mode = transportMode
 	c.writeOkay()
 
@@ -330,54 +321,36 @@ func (c *AdbConnection) handleTransportWithID(serial string) {
 	if _, err := c.conn.Write(buf); err != nil {
 		slog.Error("failed to write transport ID", "serial", serial, "error", err)
 	}
-	slog.Debug("transport (tport)", "serial", serial, "session", sid, "transportID", transportID)
+	slog.Debug("transport (tport)", "serial", serial, "transportID", transportID)
 }
 
 func (c *AdbConnection) handleTransport(serial string) {
-	sid, _, err := c.sessionManager.AcquireRef(serial)
-	if err != nil {
-		c.writeFail(fmt.Sprintf("failed to acquire device %s: %v", serial, err))
-		return
-	}
 	c.transportSerial = serial
-	c.sessionID = sid
 	c.mode = transportMode
 	c.writeOkay()
-	slog.Debug("transport", "serial", serial, "session", sid)
+	slog.Debug("transport", "serial", serial)
 }
 
 func (c *AdbConnection) handleTransportCommand(request string) {
 	slog.Debug("TRANSPORT command", "serial", c.transportSerial, "request", request)
-
-	if c.sessionID == "" {
-		c.writeFail("no active session")
-		return
-	}
 
 	switch {
 	case strings.HasPrefix(request, "shell:"):
 		command := strings.TrimPrefix(request, "shell:")
 		c.writeOkay()
 
-		if err := c.commandRouter.ExecuteOnSession(c.sessionID, command, func(data []byte) {
-			WriteRaw(c.conn, data)
+		if err := c.commandRouter.ExecuteOnDevice(c.connCtx, c.transportSerial, command, func(data []byte) error {
+			return WriteRaw(c.conn, data)
 		}); err != nil {
-			slog.Error("shell command failed", "error", err)
-			if strings.Contains(err.Error(), "NOT_FOUND") {
-				c.sessionManager.EvictSession(c.transportSerial, c.sessionID)
-			}
+			slog.Error("shell command failed", "serial", c.transportSerial, "error", err)
 		}
 
 	default:
 		// Forward unsupported commands (sync:, reboot:, etc.) to the
-		// real ADB server via bidirectional gRPC streaming.
-		slog.Info("forwarding transport command to real ADB", "request", request)
-		if err := c.commandRouter.ForwardToSession(c.sessionID, request, c.conn, c.conn); err != nil {
-			slog.Error("forward failed", "request", request, "error", err)
-			if strings.Contains(err.Error(), "NOT_FOUND") {
-				c.sessionManager.EvictSession(c.transportSerial, c.sessionID)
-			}
-			// Try to send FAIL
+		// real ADB server via bidirectional gRPC streaming through device-source.
+		slog.Info("forwarding transport command to device-source", "serial", c.transportSerial, "request", request)
+		if err := c.commandRouter.ForwardToDevice(c.transportSerial, request, c.conn); err != nil {
+			slog.Error("forward failed", "serial", c.transportSerial, "request", request, "error", err)
 			c.writeFail("forward failed: " + err.Error())
 		}
 	}

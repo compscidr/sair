@@ -119,13 +119,13 @@ grpcurl -plaintext localhost:8080 devicesource.DeviceSource/GetDevices
 
 | Variable | Default | Description |
 |---|---|---|
-| `ORCHESTRATOR_ADDR` | `localhost:9090` | Orchestrator gRPC address |
+| `ORCHESTRATOR_ADDR` | `localhost:9090` | Orchestrator gRPC address (lock management) |
 | `ORCHESTRATOR_TLS` | `false` | Use TLS for orchestrator connection |
+| `DEVICE_SOURCE_ADDR` | `localhost:8080` | Device source gRPC address (ADB operations) |
 | `SAIR_API_KEY` | `dev-key-123` | API key for authentication |
 | `ADB_PROXY_PORT` | `5037` | ADB protocol listen port |
 | `PROXY_HTTP_PORT` | `8550` | HTTP API listen port |
 | `PROXY_HTTP_HOST` | `0.0.0.0` | HTTP API bind address |
-| `SESSION_GRACE_PERIOD_MS` | `30000` | Grace period before releasing idle sessions |
 | `HEARTBEAT_INTERVAL_SECONDS` | `60` | Lock heartbeat interval |
 
 The proxy exposes two ports:

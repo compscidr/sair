@@ -256,20 +256,24 @@ func (s *Server) ForwardToDevice(stream pb.DeviceSource_ForwardToDeviceServer) e
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to connect to ADB server: %v", err)
 	}
-	defer conn.Close()
 
 	// Establish transport to the device
 	if err := sendAdbLtv(conn, "host:transport:"+setup.Serial); err != nil {
+		conn.Close()
 		return status.Errorf(codes.Internal, "failed to send transport: %v", err)
 	}
 	if err := readAdbOkay(conn); err != nil {
+		conn.Close()
 		return err
 	}
+	slog.Debug("ForwardToDevice: transport established", "serial", setup.Serial)
 
 	// Send the initial command (e.g., "sync:")
 	if err := sendAdbLtv(conn, setup.InitialCommand); err != nil {
+		conn.Close()
 		return status.Errorf(codes.Internal, "failed to send initial command: %v", err)
 	}
+	slog.Debug("ForwardToDevice: initial command sent", "serial", setup.Serial, "command", setup.InitialCommand)
 
 	// Bidirectional forwarding
 	done := make(chan error, 2)
@@ -280,14 +284,17 @@ func (s *Server) ForwardToDevice(stream pb.DeviceSource_ForwardToDeviceServer) e
 		for {
 			n, err := conn.Read(buf)
 			if err != nil {
+				slog.Debug("ForwardToDevice: ADB read done", "serial", setup.Serial, "error", err)
 				done <- err
 				return
 			}
+			slog.Debug("ForwardToDevice: ADB→gRPC", "serial", setup.Serial, "bytes", n)
 			data := make([]byte, n)
 			copy(data, buf[:n])
 			if err := stream.Send(&pb.ForwardData{
 				Payload: &pb.ForwardData_Data{Data: data},
 			}); err != nil {
+				slog.Debug("ForwardToDevice: gRPC send failed", "serial", setup.Serial, "error", err)
 				done <- err
 				return
 			}
@@ -299,11 +306,14 @@ func (s *Server) ForwardToDevice(stream pb.DeviceSource_ForwardToDeviceServer) e
 		for {
 			msg, err := stream.Recv()
 			if err != nil {
+				slog.Debug("ForwardToDevice: gRPC recv done", "serial", setup.Serial, "error", err)
 				done <- err
 				return
 			}
 			if data := msg.GetData(); data != nil {
+				slog.Debug("ForwardToDevice: gRPC→ADB", "serial", setup.Serial, "bytes", len(data))
 				if _, err := conn.Write(data); err != nil {
+					slog.Debug("ForwardToDevice: ADB write failed", "serial", setup.Serial, "error", err)
 					done <- err
 					return
 				}
@@ -311,8 +321,30 @@ func (s *Server) ForwardToDevice(stream pb.DeviceSource_ForwardToDeviceServer) e
 		}
 	}()
 
-	// Wait for either direction to finish
-	<-done
+	// Wait for either direction to finish, then close the ADB connection
+	// to unblock the other goroutine.
+	err = <-done
+	conn.Close()
+	err2 := <-done
+
+	// Return the first real error (prefer non-EOF/non-canceled).
+	resultErr := firstRealError(err, err2)
+	slog.Info("ForwardToDevice: finished", "serial", setup.Serial, "error", resultErr)
+	return resultErr
+}
+
+// firstRealError returns the first non-benign error, or nil if both are benign
+// (nil, io.EOF, or gRPC Canceled).
+func firstRealError(errs ...error) error {
+	for _, err := range errs {
+		if err == nil || err == io.EOF {
+			continue
+		}
+		if st, ok := status.FromError(err); ok && st.Code() == codes.Canceled {
+			continue
+		}
+		return err
+	}
 	return nil
 }
 
