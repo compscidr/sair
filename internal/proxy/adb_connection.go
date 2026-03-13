@@ -185,11 +185,13 @@ func (c *AdbConnection) handleHostCommand(request string) {
 
 		c.writeOkay()
 		// TODO: send updates when devices change instead of just the initial snapshot
-		// Send length-prefixed device list
+		// Send length-prefixed device list as a single write
 		data := []byte(sb.String())
 		lengthHex := fmt.Sprintf("%04X", len(data))
-		c.conn.Write([]byte(lengthHex))
-		c.conn.Write(data)
+		msg := make([]byte, 0, len(lengthHex)+len(data))
+		msg = append(msg, lengthHex...)
+		msg = append(msg, data...)
+		c.conn.Write(msg)
 
 		// Hold connection open until client disconnects
 		buf := make([]byte, 1)

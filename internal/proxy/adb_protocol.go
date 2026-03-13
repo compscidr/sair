@@ -47,19 +47,27 @@ func WriteOkay(w io.Writer) error {
 }
 
 // WriteOkayWithPayload writes an OKAY response with length-prefixed payload.
+// The entire message is sent as a single Write to avoid TCP fragmentation.
 func WriteOkayWithPayload(w io.Writer, payload string) error {
-	if _, err := w.Write([]byte("OKAY")); err != nil {
-		return err
-	}
-	return writeLengthPrefixed(w, payload)
+	data := []byte(payload)
+	msg := make([]byte, 0, 4+4+len(data))
+	msg = append(msg, "OKAY"...)
+	msg = append(msg, fmt.Sprintf("%04X", len(data))...)
+	msg = append(msg, data...)
+	_, err := w.Write(msg)
+	return err
 }
 
 // WriteFail writes a FAIL response with error message.
+// The entire message is sent as a single Write to avoid TCP fragmentation.
 func WriteFail(w io.Writer, message string) error {
-	if _, err := w.Write([]byte("FAIL")); err != nil {
-		return err
-	}
-	return writeLengthPrefixed(w, message)
+	data := []byte(message)
+	msg := make([]byte, 0, 4+4+len(data))
+	msg = append(msg, "FAIL"...)
+	msg = append(msg, fmt.Sprintf("%04X", len(data))...)
+	msg = append(msg, data...)
+	_, err := w.Write(msg)
+	return err
 }
 
 // WriteRaw writes raw bytes (for streaming shell output).
@@ -79,12 +87,3 @@ func FormatDeviceLineLong(serial, product, model, device string, transportID int
 		serial, product, model, device, transportID)
 }
 
-func writeLengthPrefixed(w io.Writer, data string) error {
-	bytes := []byte(data)
-	lengthHex := fmt.Sprintf("%04X", len(bytes))
-	if _, err := w.Write([]byte(lengthHex)); err != nil {
-		return err
-	}
-	_, err := w.Write(bytes)
-	return err
-}

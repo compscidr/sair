@@ -57,6 +57,10 @@ func (p *AdbProxy) Start() error {
 			}
 			continue
 		}
+		// Disable Nagle's algorithm so ADB protocol messages are sent immediately
+		if tc, ok := conn.(*net.TCPConn); ok {
+			tc.SetNoDelay(true)
+		}
 		// Bare port: allowedSerials = empty map → no devices visible
 		adbConn := NewAdbConnection(conn, p.commandRouter, p.sessionManager, p.deviceListTracker, map[string]struct{}{})
 		go adbConn.Handle()
