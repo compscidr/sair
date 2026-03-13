@@ -1,11 +1,12 @@
 # Build stage
 FROM golang:1.24 AS builder
+ARG VERSION=dev
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /bin/sair-device-source ./cmd/sair-device-source
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /bin/sair-proxy ./cmd/sair-proxy
+RUN CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/compscidr/sair/internal/version.Version=${VERSION}" -o /bin/sair-device-source ./cmd/sair-device-source
+RUN CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/compscidr/sair/internal/version.Version=${VERSION}" -o /bin/sair-proxy ./cmd/sair-proxy
 
 # Device source image
 # NOTE: The real adb server must run on the host (not in this container).

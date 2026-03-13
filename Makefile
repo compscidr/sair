@@ -10,9 +10,11 @@ proto:
 		--go-grpc_out=. --go-grpc_opt=paths=source_relative \
 		proto/orchestrator/orchestrator.proto
 
+VERSION ?= dev
+
 build: proto
-	go build ./cmd/sair-device-source
-	go build ./cmd/sair-proxy
+	go build -ldflags="-X github.com/compscidr/sair/internal/version.Version=$(VERSION)" ./cmd/sair-device-source
+	go build -ldflags="-X github.com/compscidr/sair/internal/version.Version=$(VERSION)" ./cmd/sair-proxy
 
 clean:
 	rm -f sair-device-source sair-proxy
