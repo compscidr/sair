@@ -109,6 +109,10 @@ func (r *CommandRouter) ExecuteOnDevice(ctx context.Context, serial, command str
 // using shell v2 binary framing (stdout/stderr/exit packets). This lets ddmlib
 // clients that send shell,v2 requests get properly framed responses without
 // going through the fragile ForwardToDevice bidirectional tunnel.
+//
+// Note: stdin (shell v2 ID 0) is not supported — the underlying ExecOnDevice
+// RPC runs a non-interactive "adb shell <cmd>" subprocess with no stdin pipe.
+// This is fine for the non-interactive commands ddmlib sends (pm install, etc.).
 func (r *CommandRouter) ExecuteOnDeviceShellV2(ctx context.Context, serial, command string, conn net.Conn) error {
 	req := &dspb.DeviceCommand{
 		Serial:  serial,
@@ -137,7 +141,13 @@ func (r *CommandRouter) ExecuteOnDeviceShellV2(ctx context.Context, serial, comm
 				return err
 			}
 		}
-		exitCode = result.ExitCode
+		// device-source sends exit code as the final message (after all
+		// stdout/stderr has drained), so only capture it from messages
+		// that carry no output to avoid overwriting with protobuf's
+		// default zero from intermediate messages.
+		if result.Stdout == "" && result.Stderr == "" {
+			exitCode = result.ExitCode
+		}
 	}
 	return WriteShellV2Packet(conn, shellV2Exit, []byte{byte(exitCode)})
 }
