@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	dspb "github.com/compscidr/sair/proto/devicesource"
 	pb "github.com/compscidr/sair/proto/orchestrator"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -19,30 +20,44 @@ type LockResult struct {
 	Serials map[string]struct{}
 }
 
-// CommandRouter is a gRPC client that routes ADB commands to the orchestrator.
+// CommandRouter is a gRPC client that routes:
+//   - ADB commands directly to the local device-source
+//   - Lock management to the remote orchestrator
 type CommandRouter struct {
-	conn   *grpc.ClientConn
-	client pb.OrchestratorClient
-	apiKey string
+	orchConn   *grpc.ClientConn
+	orchClient pb.OrchestratorClient
+	dsConn     *grpc.ClientConn
+	dsClient   dspb.DeviceSourceClient
+	apiKey     string
 }
 
-func NewCommandRouter(addr, apiKey string, useTLS bool) (*CommandRouter, error) {
-	var opts []grpc.DialOption
-	if useTLS {
-		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(nil)))
+func NewCommandRouter(orchestratorAddr, deviceSourceAddr, apiKey string, orchestratorTLS bool) (*CommandRouter, error) {
+	// Orchestrator connection (remote, may use TLS)
+	var orchOpts []grpc.DialOption
+	if orchestratorTLS {
+		orchOpts = append(orchOpts, grpc.WithTransportCredentials(credentials.NewTLS(nil)))
 	} else {
-		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		orchOpts = append(orchOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
-	conn, err := grpc.NewClient(addr, opts...)
+	orchConn, err := grpc.NewClient(orchestratorAddr, orchOpts...)
 	if err != nil {
 		return nil, err
 	}
 
+	// Device-source connection (local, plaintext)
+	dsConn, err := grpc.NewClient(deviceSourceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		orchConn.Close()
+		return nil, err
+	}
+
 	return &CommandRouter{
-		conn:   conn,
-		client: pb.NewOrchestratorClient(conn),
-		apiKey: apiKey,
+		orchConn:   orchConn,
+		orchClient: pb.NewOrchestratorClient(orchConn),
+		dsConn:     dsConn,
+		dsClient:   dspb.NewDeviceSourceClient(dsConn),
+		apiKey:     apiKey,
 	}, nil
 }
 
@@ -57,23 +72,14 @@ func (r *CommandRouter) ctxWithTimeout(d time.Duration) (context.Context, contex
 	return context.WithTimeout(ctx, d)
 }
 
-func (r *CommandRouter) AcquireDevice(serial string, timeoutSeconds, idleTimeoutSeconds int32) (*pb.AcquireDeviceResponse, error) {
-	req := &pb.AcquireDeviceRequest{
-		TimeoutSeconds:     timeoutSeconds,
-		IdleTimeoutSeconds: idleTimeoutSeconds,
-	}
-	if serial != "" {
-		req.Requirements = &pb.DeviceRequirements{Serial: serial}
-	}
-	return r.client.AcquireDevice(r.ctx(), req)
-}
+// ADB operations — go directly to the device-source
 
-func (r *CommandRouter) ExecuteOnSession(sessionID, command string, onOutput func([]byte)) error {
-	req := &pb.SessionCommand{
-		SessionId: sessionID,
-		Command:   command,
+func (r *CommandRouter) ExecuteOnDevice(serial, command string, onOutput func([]byte)) error {
+	req := &dspb.DeviceCommand{
+		Serial:  serial,
+		Command: command,
 	}
-	stream, err := r.client.ExecuteOnSession(r.ctx(), req)
+	stream, err := r.dsClient.ExecOnDevice(context.Background(), req)
 	if err != nil {
 		return err
 	}
@@ -94,33 +100,21 @@ func (r *CommandRouter) ExecuteOnSession(sessionID, command string, onOutput fun
 	}
 }
 
-func (r *CommandRouter) ReleaseDevice(sessionID string) (bool, error) {
-	resp, err := r.client.ReleaseDevice(r.ctx(), &pb.ReleaseDeviceRequest{SessionId: sessionID})
-	if err != nil {
-		return false, err
-	}
-	return resp.Released, nil
-}
-
-func (r *CommandRouter) ListDevices() (*pb.DeviceList, error) {
-	return r.client.ListDevices(r.ctx(), &pb.ListDevicesRequest{})
-}
-
-// ForwardToSession relays raw bytes between TCP streams and gRPC bidirectional stream.
-func (r *CommandRouter) ForwardToSession(sessionID, command string, tcpIn io.Reader, tcpOut io.Writer) error {
-	ctx, cancel := context.WithCancel(r.ctx())
+// ForwardToDevice relays raw bytes between TCP streams and the device-source's ForwardToDevice gRPC stream.
+func (r *CommandRouter) ForwardToDevice(serial, command string, tcpIn io.Reader, tcpOut io.Writer) error {
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	stream, err := r.client.ForwardToSession(ctx)
+	stream, err := r.dsClient.ForwardToDevice(ctx)
 	if err != nil {
 		return err
 	}
 
 	// Send setup message
-	err = stream.Send(&pb.SessionForwardData{
-		Payload: &pb.SessionForwardData_Setup{
-			Setup: &pb.SessionForwardSetup{
-				SessionId:      sessionID,
+	err = stream.Send(&dspb.ForwardData{
+		Payload: &dspb.ForwardData_Setup{
+			Setup: &dspb.ForwardSetup{
+				Serial:         serial,
 				InitialCommand: command,
 			},
 		},
@@ -143,8 +137,8 @@ func (r *CommandRouter) ForwardToSession(sessionID, command string, tcpIn io.Rea
 			}
 			data := make([]byte, n)
 			copy(data, buf[:n])
-			if err := stream.Send(&pb.SessionForwardData{
-				Payload: &pb.SessionForwardData_Data{Data: data},
+			if err := stream.Send(&dspb.ForwardData{
+				Payload: &dspb.ForwardData_Data{Data: data},
 			}); err != nil {
 				done <- err
 				return
@@ -181,6 +175,12 @@ func (r *CommandRouter) ForwardToSession(sessionID, command string, tcpIn io.Rea
 	return err
 }
 
+// Orchestrator operations — lock management only
+
+func (r *CommandRouter) ListDevices() (*pb.DeviceList, error) {
+	return r.orchClient.ListDevices(r.ctx(), &pb.ListDevicesRequest{})
+}
+
 func (r *CommandRouter) AcquireLock(serials map[string]struct{}, deadlineMinutes int64) (*LockResult, error) {
 	if deadlineMinutes <= 0 {
 		deadlineMinutes = 30
@@ -192,7 +192,7 @@ func (r *CommandRouter) AcquireLock(serials map[string]struct{}, deadlineMinutes
 	for s := range serials {
 		req.Serials = append(req.Serials, s)
 	}
-	resp, err := r.client.AcquireLock(ctx, req)
+	resp, err := r.orchClient.AcquireLock(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -207,7 +207,7 @@ func (r *CommandRouter) AcquireLock(serials map[string]struct{}, deadlineMinutes
 func (r *CommandRouter) ReleaseLock(lockID string) (bool, error) {
 	ctx, cancel := r.ctxWithTimeout(30 * time.Second)
 	defer cancel()
-	resp, err := r.client.ReleaseLock(ctx, &pb.ReleaseLockRequest{LockId: lockID})
+	resp, err := r.orchClient.ReleaseLock(ctx, &pb.ReleaseLockRequest{LockId: lockID})
 	if err != nil {
 		return false, err
 	}
@@ -217,7 +217,7 @@ func (r *CommandRouter) ReleaseLock(lockID string) (bool, error) {
 func (r *CommandRouter) LockHeartbeat(lockID string) (bool, error) {
 	ctx, cancel := r.ctxWithTimeout(30 * time.Second)
 	defer cancel()
-	resp, err := r.client.LockHeartbeat(ctx, &pb.LockHeartbeatRequest{LockId: lockID})
+	resp, err := r.orchClient.LockHeartbeat(ctx, &pb.LockHeartbeatRequest{LockId: lockID})
 	if err != nil {
 		return false, err
 	}
@@ -225,7 +225,10 @@ func (r *CommandRouter) LockHeartbeat(lockID string) (bool, error) {
 }
 
 func (r *CommandRouter) Shutdown() {
-	if err := r.conn.Close(); err != nil {
-		slog.Error("failed to close gRPC connection", "error", err)
+	if err := r.orchConn.Close(); err != nil {
+		slog.Error("failed to close orchestrator connection", "error", err)
+	}
+	if err := r.dsConn.Close(); err != nil {
+		slog.Error("failed to close device-source connection", "error", err)
 	}
 }

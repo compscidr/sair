@@ -10,14 +10,13 @@ import (
 // AdbProxy is the main ADB Proxy server.
 //
 // Listens on a TCP port (default 5037, matching ADB server) and translates
-// ADB smart socket protocol requests into orchestrator gRPC calls.
+// ADB smart socket protocol requests into device-source gRPC calls.
 //
 // The bare port (5037) shows NO devices — runners must acquire a scoped port
 // via the proxy HTTP API to access devices.
 type AdbProxy struct {
 	port              int
 	commandRouter     *CommandRouter
-	sessionManager    *SessionManager
 	deviceListTracker *DeviceListTracker
 	listener          net.Listener
 	running           atomic.Bool
@@ -26,13 +25,11 @@ type AdbProxy struct {
 func NewAdbProxy(
 	port int,
 	commandRouter *CommandRouter,
-	sessionManager *SessionManager,
 	deviceListTracker *DeviceListTracker,
 ) *AdbProxy {
 	return &AdbProxy{
 		port:              port,
 		commandRouter:     commandRouter,
-		sessionManager:    sessionManager,
 		deviceListTracker: deviceListTracker,
 	}
 }
@@ -64,7 +61,7 @@ func (p *AdbProxy) Start() error {
 			}
 		}
 		// Bare port: allowedSerials = empty map → no devices visible
-		adbConn := NewAdbConnection(conn, p.commandRouter, p.sessionManager, p.deviceListTracker, map[string]struct{}{})
+		adbConn := NewAdbConnection(conn, p.commandRouter, p.deviceListTracker, map[string]struct{}{})
 		go adbConn.Handle()
 	}
 	return nil
@@ -72,7 +69,6 @@ func (p *AdbProxy) Start() error {
 
 func (p *AdbProxy) Stop() {
 	p.running.Store(false)
-	p.sessionManager.ReleaseAll()
 	p.deviceListTracker.Stop()
 	if p.listener != nil {
 		p.listener.Close()
