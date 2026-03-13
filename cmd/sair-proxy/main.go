@@ -14,6 +14,8 @@ import (
 )
 
 func main() {
+	updater.CheckAndUpdate("sair-proxy")
+
 	port := envInt("ADB_PROXY_PORT", 5037)
 	orchestratorAddr := envStr("ORCHESTRATOR_ADDR", "localhost:9090")
 	deviceSourceAddr := envStr("DEVICE_SOURCE_ADDR", "localhost:8080")
@@ -22,8 +24,6 @@ func main() {
 	httpAPIHost := envStr("PROXY_HTTP_HOST", "0.0.0.0")
 	heartbeatInterval := envInt64("HEARTBEAT_INTERVAL_SECONDS", 60)
 	orchestratorTLS := envBool("ORCHESTRATOR_TLS")
-
-	updater.CheckAndUpdate("sair-proxy")
 
 	slog.Info("ADB Proxy starting...", "version", version.Version)
 	slog.Info("config",

@@ -25,6 +25,8 @@ type releaseInfo struct {
 	TagName string `json:"tag_name"`
 }
 
+const maxBinarySize = 100 << 20 // 100 MB
+
 // CheckAndUpdate checks GitHub for a newer release and self-updates if found.
 // It is a no-op for dev builds or when SAIR_AUTO_UPDATE=false.
 // On success it re-execs the new binary (never returns).
@@ -33,6 +35,10 @@ func CheckAndUpdate(binaryName string) {
 		return
 	}
 	if strings.EqualFold(os.Getenv("SAIR_AUTO_UPDATE"), "false") {
+		return
+	}
+	if os.Getenv("SAIR_JUST_UPDATED") == "1" {
+		os.Unsetenv("SAIR_JUST_UPDATED")
 		return
 	}
 
@@ -71,6 +77,7 @@ func CheckAndUpdate(binaryName string) {
 	}
 
 	slog.Info("auto-update: updated successfully, restarting", "version", latest)
+	os.Setenv("SAIR_JUST_UPDATED", "1")
 	if err := syscall.Exec(execPath, os.Args, os.Environ()); err != nil {
 		slog.Error("auto-update: restart failed", "error", err)
 	}
@@ -233,13 +240,17 @@ func atomicReplace(targetPath string, src io.Reader, mode os.FileMode) error {
 		}
 	}()
 
-	if _, err := io.Copy(tmp, src); err != nil {
+	if _, err := io.Copy(tmp, io.LimitReader(src, maxBinarySize)); err != nil {
 		tmp.Close()
 		return fmt.Errorf("write: %w", err)
 	}
 	if err := tmp.Chmod(mode); err != nil {
 		tmp.Close()
 		return fmt.Errorf("chmod: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("fsync: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close: %w", err)
