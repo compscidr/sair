@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"strconv"
@@ -81,6 +82,25 @@ func WriteFail(w io.Writer, message string) error {
 // WriteRaw writes raw bytes (for streaming shell output).
 func WriteRaw(w io.Writer, data []byte) error {
 	_, err := w.Write(data)
+	return err
+}
+
+// Shell v2 protocol packet IDs.
+const (
+	shellV2Stdout byte = 1
+	shellV2Stderr byte = 2
+	shellV2Exit   byte = 3
+)
+
+// WriteShellV2Packet writes a shell v2 framed packet: 1-byte ID + 4-byte LE length + payload.
+func WriteShellV2Packet(w io.Writer, id byte, data []byte) error {
+	header := make([]byte, 5)
+	header[0] = id
+	binary.LittleEndian.PutUint32(header[1:], uint32(len(data)))
+	packet := make([]byte, 0, 5+len(data))
+	packet = append(packet, header...)
+	packet = append(packet, data...)
+	_, err := w.Write(packet)
 	return err
 }
 

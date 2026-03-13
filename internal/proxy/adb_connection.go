@@ -345,6 +345,22 @@ func (c *AdbConnection) handleTransportCommand(request string) {
 			slog.Error("shell command failed", "serial", c.transportSerial, "error", err)
 		}
 
+	case strings.HasPrefix(request, "shell,"):
+		// shell,v2,TERM=xterm-256color:<command> — used by modern ddmlib/AGP.
+		// Route through ExecOnDevice with v2 framing instead of ForwardToDevice
+		// to avoid bidirectional gRPC tunneling that can deadlock.
+		colonIdx := strings.Index(request, ":")
+		if colonIdx < 0 {
+			c.writeFail("malformed shell,v2 command")
+			return
+		}
+		command := request[colonIdx+1:]
+		c.writeOkay()
+
+		if err := c.commandRouter.ExecuteOnDeviceShellV2(c.connCtx, c.transportSerial, command, c.conn); err != nil {
+			slog.Error("shell v2 command failed", "serial", c.transportSerial, "error", err)
+		}
+
 	default:
 		// Forward unsupported commands (sync:, reboot:, etc.) to the
 		// real ADB server via bidirectional gRPC streaming through device-source.

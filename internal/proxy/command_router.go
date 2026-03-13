@@ -105,6 +105,43 @@ func (r *CommandRouter) ExecuteOnDevice(ctx context.Context, serial, command str
 	}
 }
 
+// ExecuteOnDeviceShellV2 runs a command via ExecOnDevice and writes the output
+// using shell v2 binary framing (stdout/stderr/exit packets). This lets ddmlib
+// clients that send shell,v2 requests get properly framed responses without
+// going through the fragile ForwardToDevice bidirectional tunnel.
+func (r *CommandRouter) ExecuteOnDeviceShellV2(ctx context.Context, serial, command string, conn net.Conn) error {
+	req := &dspb.DeviceCommand{
+		Serial:  serial,
+		Command: command,
+	}
+	stream, err := r.dsClient.ExecOnDevice(ctx, req)
+	if err != nil {
+		return err
+	}
+	var exitCode int32
+	for {
+		result, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if result.Stdout != "" {
+			if err := WriteShellV2Packet(conn, shellV2Stdout, []byte(result.Stdout)); err != nil {
+				return err
+			}
+		}
+		if result.Stderr != "" {
+			if err := WriteShellV2Packet(conn, shellV2Stderr, []byte(result.Stderr)); err != nil {
+				return err
+			}
+		}
+		exitCode = result.ExitCode
+	}
+	return WriteShellV2Packet(conn, shellV2Exit, []byte{byte(exitCode)})
+}
+
 // ForwardToDevice relays raw bytes between a TCP connection and the device-source's ForwardToDevice gRPC stream.
 func (r *CommandRouter) ForwardToDevice(serial, command string, conn net.Conn) error {
 	ctx, cancel := context.WithCancel(context.Background())
