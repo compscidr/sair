@@ -139,8 +139,12 @@ func (c *AdbConnection) handleHostCommand(request string) {
 
 	case request == "host:features" || request == "host:host-features" ||
 		(strings.HasPrefix(request, "host-serial:") && strings.HasSuffix(request, ":features")):
+		// Do not advertise abb or abb_exec — the proxy cannot handle these
+		// natively, so they fall through to ForwardToDevice which can deadlock.
+		// Without these features ddmlib falls back to shell:pm ... which the
+		// proxy handles via ExecOnDevice.
 		c.writeOkayWithPayload(
-			"cmd,stat_v2,ls_v2,fixed_push_mkdir,apex,abb,fixed_push_symlink_timestamp,abb_exec,remount_shell,track_app,sendrecv_v2,sendrecv_v2_brotli,sendrecv_v2_lz4,sendrecv_v2_zstd,sendrecv_v2_dry_run_send,openscreen_mdns")
+			"cmd,stat_v2,ls_v2,fixed_push_mkdir,apex,fixed_push_symlink_timestamp,remount_shell,track_app,sendrecv_v2,sendrecv_v2_brotli,sendrecv_v2_lz4,sendrecv_v2_zstd,sendrecv_v2_dry_run_send,openscreen_mdns")
 
 	case request == "host:devices" || request == "host:devices-short":
 		devices := c.getVisibleDevices()
