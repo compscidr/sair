@@ -179,6 +179,12 @@ func (m *ScopedPortManager) runAcceptLoop(sp *ScopedPort) {
 			}
 			return
 		}
+		// Disable Nagle's algorithm so ADB protocol messages are sent immediately
+		if tc, ok := conn.(*net.TCPConn); ok {
+			if err := tc.SetNoDelay(true); err != nil {
+				slog.Warn("failed to set TCP_NODELAY", "remote", conn.RemoteAddr(), "error", err)
+			}
+		}
 		adbConn := NewAdbConnection(conn, m.commandRouter, m.sessionManager, m.deviceListTracker, sp.Serials)
 		go adbConn.Handle()
 	}
