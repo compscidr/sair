@@ -169,6 +169,8 @@ message LockHeartbeatResponse {
   bool alive = 1;
 }
 
+// ReportDevicesRequest is sent by the proxy to report its current device list.
+// The busy field in DeviceInfo is ignored; busy state is managed by the orchestrator.
 message ReportDevicesRequest {
   repeated DeviceInfo devices = 1;
 }

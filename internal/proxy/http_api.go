@@ -173,6 +173,12 @@ type deviceInfo struct {
 }
 
 func (a *HTTPApi) handleRegisterDevices(w http.ResponseWriter, r *http.Request) {
+	if !a.requireAuth(r) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or missing x-api-key header"})
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MB limit
 	var report deviceReport
 	if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})

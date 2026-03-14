@@ -105,16 +105,19 @@ func (r *CommandRouter) ForwardToDevice(serial, command string, conn net.Conn) e
 		return err
 	}
 
-	done := make(chan error, 2)
+	done := make(chan error, 1)
 
-	// TCP → gRPC (client data to device)
+	// TCP → gRPC (request direction — half-close aware)
 	go func() {
 		buf := make([]byte, 32768)
 		for {
 			n, err := conn.Read(buf)
 			if err != nil {
 				stream.CloseSend()
-				done <- err
+				if err != io.EOF {
+					// Real error — cancel to unblock response direction
+					cancel()
+				}
 				return
 			}
 			data := make([]byte, n)
@@ -122,13 +125,13 @@ func (r *CommandRouter) ForwardToDevice(serial, command string, conn net.Conn) e
 			if err := stream.Send(&dspb.ForwardData{
 				Payload: &dspb.ForwardData_Data{Data: data},
 			}); err != nil {
-				done <- err
+				cancel()
 				return
 			}
 		}
 	}()
 
-	// gRPC → TCP (device response to client)
+	// gRPC → TCP (response direction — drives teardown)
 	go func() {
 		for {
 			resp, err := stream.Recv()
@@ -145,12 +148,10 @@ func (r *CommandRouter) ForwardToDevice(serial, command string, conn net.Conn) e
 		}
 	}()
 
-	// Wait for first direction to finish, then tear down the other.
-	// cancel() unblocks gRPC Recv/Send; SetReadDeadline unblocks TCP Read.
+	// Wait for the response direction to finish, then tear down.
 	err = <-done
 	cancel()
 	conn.SetReadDeadline(time.Now())
-	<-done
 
 	if err == io.EOF {
 		return nil

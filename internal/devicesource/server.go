@@ -280,9 +280,9 @@ func (s *Server) ForwardToDevice(stream pb.DeviceSource_ForwardToDeviceServer) e
 	}
 
 	// Bidirectional forwarding
-	done := make(chan error, 2)
+	done := make(chan error, 1)
 
-	// ADB → gRPC
+	// ADB → gRPC (response direction — drives teardown)
 	go func() {
 		buf := make([]byte, 32768)
 		for {
@@ -305,40 +305,40 @@ func (s *Server) ForwardToDevice(stream pb.DeviceSource_ForwardToDeviceServer) e
 		}
 	}()
 
-	// gRPC → ADB
+	// gRPC → ADB (request direction — half-close aware)
 	go func() {
 		for {
 			msg, err := stream.Recv()
 			if err != nil {
 				slog.Info("ForwardToDevice: gRPC recv done", "serial", setup.Serial, "error", err)
-				// Client done sending — half-close the ADB write side so ADB
-				// knows all data has arrived, but keep the read side open for
-				// the response (e.g. exec: install-write result).
 				if err == io.EOF {
+					// Client done sending — half-close the ADB write side so ADB
+					// knows all data has arrived, but keep the read side open for
+					// the response (e.g. exec: install-write result).
 					if tc, ok := conn.(*net.TCPConn); ok {
 						slog.Info("ForwardToDevice: half-closing ADB write side", "serial", setup.Serial)
 						tc.CloseWrite()
 					}
+				} else {
+					// Real error — close conn to unblock the response direction.
+					conn.Close()
 				}
-				done <- err
 				return
 			}
 			if data := msg.GetData(); data != nil {
 				slog.Debug("ForwardToDevice: gRPC→ADB", "serial", setup.Serial, "bytes", len(data))
 				if _, err := conn.Write(data); err != nil {
 					slog.Info("ForwardToDevice: ADB write failed", "serial", setup.Serial, "error", err)
-					done <- err
+					conn.Close()
 					return
 				}
 			}
 		}
 	}()
 
-	// Wait for the first direction to finish, then close the ADB connection
+	// Wait for the response direction to finish, then close the ADB connection
 	// and return. Returning from the method causes the gRPC framework to cancel
-	// the stream, which unblocks any goroutine blocked on stream.Recv/Send.
-	// conn.Close() unblocks any goroutine blocked on conn.Read/Write.
-	// Both goroutines will exit shortly after.
+	// the stream, which unblocks the request goroutine's stream.Recv().
 	err = <-done
 	conn.Close()
 

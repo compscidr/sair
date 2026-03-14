@@ -62,8 +62,12 @@ func main() {
 	}
 
 	// Start device reporter — pushes device list to proxy
+	apiKey := os.Getenv("SAIR_API_KEY")
+	if apiKey == "" {
+		apiKey = "dev-key-123"
+	}
 	stopReport := make(chan struct{})
-	go reportDevices(dsServer, proxyAddr, sourceAddr, stopReport)
+	go reportDevices(dsServer, proxyAddr, sourceAddr, apiKey, stopReport)
 
 	// Graceful shutdown
 	sigCh := make(chan os.Signal, 1)
@@ -95,7 +99,8 @@ type deviceInfo struct {
 	Release      int32  `json:"release"`
 }
 
-func reportDevices(dsServer *devicesource.Server, proxyAddr, sourceAddr string, stop chan struct{}) {
+func reportDevices(dsServer *devicesource.Server, proxyAddr, sourceAddr, apiKey string, stop chan struct{}) {
+	client := &http.Client{Timeout: 10 * time.Second}
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -117,12 +122,23 @@ func reportDevices(dsServer *devicesource.Server, proxyAddr, sourceAddr string, 
 			})
 		}
 
-		body, _ := json.Marshal(deviceReport{
+		body, err := json.Marshal(deviceReport{
 			SourceAddr: sourceAddr,
 			Devices:    infos,
 		})
+		if err != nil {
+			slog.Warn("failed to marshal device report", "error", err)
+			return
+		}
 
-		resp, err := http.Post(proxyAddr+"/internal/devices", "application/json", bytes.NewReader(body))
+		req, err := http.NewRequest("POST", proxyAddr+"/internal/devices", bytes.NewReader(body))
+		if err != nil {
+			slog.Warn("failed to create request", "error", err)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", apiKey)
+		resp, err := client.Do(req)
 		if err != nil {
 			slog.Warn("failed to report devices to proxy", "error", err)
 			return

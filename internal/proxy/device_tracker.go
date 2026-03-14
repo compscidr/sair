@@ -32,7 +32,7 @@ type sourceEntry struct {
 	lastSeen time.Time
 }
 
-func NewDeviceListTracker(commandRouter *CommandRouter, _ int64) *DeviceListTracker {
+func NewDeviceListTracker(commandRouter *CommandRouter) *DeviceListTracker {
 	t := &DeviceListTracker{
 		commandRouter:  commandRouter,
 		sources:        make(map[string]sourceEntry),
@@ -67,14 +67,6 @@ func (t *DeviceListTracker) UpdateDevices(sourceAddr string, devices []*pb.Devic
 	t.mu.Unlock()
 
 	t.rebuild()
-
-	// Report to orchestrator immediately
-	allDevices := t.GetDevices()
-	if err := t.commandRouter.ReportDevices(allDevices); err != nil {
-		slog.Warn("failed to report devices to orchestrator", "error", err)
-	} else {
-		slog.Info("reported devices to orchestrator", "count", len(allDevices))
-	}
 }
 
 func (t *DeviceListTracker) GetDevices() []*pb.DeviceInfo {
@@ -115,7 +107,9 @@ func (t *DeviceListTracker) rebuild() {
 	currentSerials := make(map[string]struct{})
 	for _, device := range allDevices {
 		currentSerials[device.Serial] = struct{}{}
-		t.transportIDs.LoadOrStore(device.Serial, int(t.nextTransport.Add(1)-1))
+		if _, loaded := t.transportIDs.Load(device.Serial); !loaded {
+			t.transportIDs.Store(device.Serial, int(t.nextTransport.Add(1)-1))
+		}
 	}
 
 	// Remove transport IDs for devices that are gone
