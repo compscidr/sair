@@ -40,9 +40,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	deviceListTracker := proxy.NewDeviceListTracker(commandRouter, 5000)
+	deviceListTracker := proxy.NewDeviceListTracker(commandRouter)
 	scopedPortManager := proxy.NewScopedPortManager(commandRouter, deviceListTracker, heartbeatInterval)
-	httpAPI := proxy.NewHTTPApi(scopedPortManager, apiKey, httpAPIPort, httpAPIHost)
+	httpAPI := proxy.NewHTTPApi(scopedPortManager, deviceListTracker, apiKey, httpAPIPort, httpAPIHost)
 
 	adbProxy := proxy.NewAdbProxy(port, commandRouter, deviceListTracker)
 

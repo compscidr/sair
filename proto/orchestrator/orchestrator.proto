@@ -16,6 +16,7 @@ service Orchestrator {
   rpc AcquireLock(AcquireLockRequest) returns (AcquireLockResponse) {}
   rpc ReleaseLock(ReleaseLockRequest) returns (ReleaseLockResponse) {}
   rpc LockHeartbeat(LockHeartbeatRequest) returns (LockHeartbeatResponse) {}
+  rpc ReportDevices(ReportDevicesRequest) returns (ReportDevicesResponse) {}
 }
 
 message JobRequest {
@@ -167,3 +168,11 @@ message LockHeartbeatRequest {
 message LockHeartbeatResponse {
   bool alive = 1;
 }
+
+// ReportDevicesRequest is sent by the proxy to report its current device list.
+// The busy field in DeviceInfo is ignored; busy state is managed by the orchestrator.
+message ReportDevicesRequest {
+  repeated DeviceInfo devices = 1;
+}
+
+message ReportDevicesResponse {}

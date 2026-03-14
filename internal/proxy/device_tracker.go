@@ -9,26 +9,34 @@ import (
 	pb "github.com/compscidr/sair/proto/orchestrator"
 )
 
-// DeviceListTracker polls the orchestrator for the current device list and caches it.
-// Also assigns stable transport_id values for each device serial.
+// DeviceListTracker maintains the device list reported by device-sources.
+// Device-sources push their device lists via the proxy's HTTP API; this
+// tracker caches them and periodically reports to the orchestrator for
+// lock management. Also assigns stable transport_id values per serial.
 type DeviceListTracker struct {
-	commandRouter  *CommandRouter
-	pollIntervalMs int64
+	commandRouter *CommandRouter
+
+	mu      sync.Mutex
+	sources map[string]sourceEntry // sourceAddr -> devices
 
 	devices       atomic.Value // []*pb.DeviceInfo
 	transportIDs  sync.Map     // serial -> int
 	nextTransport atomic.Int32
 
-	stopCh chan struct{}
+	reportInterval time.Duration
+	stopCh         chan struct{}
 }
 
-func NewDeviceListTracker(commandRouter *CommandRouter, pollIntervalMs int64) *DeviceListTracker {
-	if pollIntervalMs <= 0 {
-		pollIntervalMs = 5000
-	}
+type sourceEntry struct {
+	devices  []*pb.DeviceInfo
+	lastSeen time.Time
+}
+
+func NewDeviceListTracker(commandRouter *CommandRouter) *DeviceListTracker {
 	t := &DeviceListTracker{
 		commandRouter:  commandRouter,
-		pollIntervalMs: pollIntervalMs,
+		sources:        make(map[string]sourceEntry),
+		reportInterval: 10 * time.Second,
 		stopCh:         make(chan struct{}),
 	}
 	t.devices.Store([]*pb.DeviceInfo{})
@@ -37,20 +45,28 @@ func NewDeviceListTracker(commandRouter *CommandRouter, pollIntervalMs int64) *D
 }
 
 func (t *DeviceListTracker) Start() {
-	t.poll()
-
+	// Periodically report devices to orchestrator and reap stale sources
 	go func() {
-		ticker := time.NewTicker(time.Duration(t.pollIntervalMs) * time.Millisecond)
+		ticker := time.NewTicker(t.reportInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				t.poll()
+				t.reapAndReport()
 			case <-t.stopCh:
 				return
 			}
 		}
 	}()
+}
+
+// UpdateDevices is called when a device-source pushes its device list.
+func (t *DeviceListTracker) UpdateDevices(sourceAddr string, devices []*pb.DeviceInfo) {
+	t.mu.Lock()
+	t.sources[sourceAddr] = sourceEntry{devices: devices, lastSeen: time.Now()}
+	t.mu.Unlock()
+
+	t.rebuild()
 }
 
 func (t *DeviceListTracker) GetDevices() []*pb.DeviceInfo {
@@ -78,26 +94,21 @@ func (t *DeviceListTracker) GetSerialByTransportID(transportID int) string {
 	return result
 }
 
-func (t *DeviceListTracker) poll() {
-	deviceList, err := t.commandRouter.ListDevices()
-	if err != nil {
-		slog.Warn("failed to poll device list", "error", err)
-		return
-	}
-
+// rebuild merges all source device lists into the cached device list.
+func (t *DeviceListTracker) rebuild() {
+	t.mu.Lock()
 	var allDevices []*pb.DeviceInfo
-	for _, source := range deviceList.Sources {
-		if source.Online {
-			allDevices = append(allDevices, source.Devices...)
-		}
+	for _, entry := range t.sources {
+		allDevices = append(allDevices, entry.devices...)
 	}
+	t.mu.Unlock()
 
 	// Assign transport IDs for new devices
 	currentSerials := make(map[string]struct{})
 	for _, device := range allDevices {
 		currentSerials[device.Serial] = struct{}{}
-		if _, loaded := t.transportIDs.LoadOrStore(device.Serial, int(t.nextTransport.Add(1)-1)); loaded {
-			// Already existed
+		if _, loaded := t.transportIDs.Load(device.Serial); !loaded {
+			t.transportIDs.Store(device.Serial, int(t.nextTransport.Add(1)-1))
 		}
 	}
 
@@ -111,6 +122,28 @@ func (t *DeviceListTracker) poll() {
 
 	t.devices.Store(allDevices)
 	slog.Debug("device list updated", "count", len(allDevices))
+}
+
+// reapAndReport removes stale sources and reports current devices to orchestrator.
+func (t *DeviceListTracker) reapAndReport() {
+	staleThreshold := 30 * time.Second
+	now := time.Now()
+
+	t.mu.Lock()
+	for addr, entry := range t.sources {
+		if now.Sub(entry.lastSeen) > staleThreshold {
+			slog.Warn("removing stale device source", "addr", addr)
+			delete(t.sources, addr)
+		}
+	}
+	t.mu.Unlock()
+
+	t.rebuild()
+
+	allDevices := t.GetDevices()
+	if err := t.commandRouter.ReportDevices(allDevices); err != nil {
+		slog.Warn("failed to report devices to orchestrator", "error", err)
+	}
 }
 
 func (t *DeviceListTracker) Stop() {
