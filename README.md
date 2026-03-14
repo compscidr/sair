@@ -32,8 +32,11 @@ sair-device-source
 
 # 3. Start the proxy (in another terminal)
 export SAIR_API_KEY=your-api-key
-ORCHESTRATOR_ADDR=orchestrator.sair.run:9090 ORCHESTRATOR_TLS=true sair-proxy
+sair-proxy
 ```
+
+The proxy connects to the hosted orchestrator at `orchestrator.sair.run` by
+default (with TLS). Override with `ORCHESTRATOR_ADDR` for local development.
 
 ### Use
 
@@ -119,8 +122,8 @@ grpcurl -plaintext localhost:8080 devicesource.DeviceSource/GetDevices
 
 | Variable | Default | Description |
 |---|---|---|
-| `ORCHESTRATOR_ADDR` | `localhost:9090` | Orchestrator gRPC address (lock management) |
-| `ORCHESTRATOR_TLS` | `false` | Use TLS for orchestrator connection |
+| `ORCHESTRATOR_ADDR` | `orchestrator.sair.run:9090` | Orchestrator gRPC address (lock management) |
+| `ORCHESTRATOR_TLS` | `true` (auto when using hosted) | Use TLS for orchestrator connection |
 | `DEVICE_SOURCE_ADDR` | `localhost:8080` | Device source gRPC address (ADB operations) |
 | `SAIR_API_KEY` | `dev-key-123` | API key for authentication |
 | `ADB_PROXY_PORT` | `5037` | ADB protocol listen port |
