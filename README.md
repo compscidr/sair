@@ -27,13 +27,16 @@ installs all binaries to `~/.local/bin`.
 #    conflict with the proxy which will own the standard port (5037).
 adb -P 5038 start-server
 
-# 2. Start the device source
-sair-device-source
-
-# 3. Start the proxy (in another terminal)
+# 2. Set your API key (shared by proxy and device-source)
 export SAIR_API_KEY=your-api-key
-ORCHESTRATOR_ADDR=orchestrator.sair.run:9090 ORCHESTRATOR_TLS=true sair-proxy
+
+# 3. Start the proxy and device source
+sair-proxy &
+sair-device-source
 ```
+
+The proxy connects to the hosted orchestrator at `orchestrator.sair.run` by
+default (with TLS). Override with `ORCHESTRATOR_ADDR` for local development.
 
 ### Use
 
@@ -119,9 +122,8 @@ grpcurl -plaintext localhost:8080 devicesource.DeviceSource/GetDevices
 
 | Variable | Default | Description |
 |---|---|---|
-| `ORCHESTRATOR_ADDR` | `localhost:9090` | Orchestrator gRPC address (lock management) |
-| `ORCHESTRATOR_TLS` | `false` | Use TLS for orchestrator connection |
-| `DEVICE_SOURCE_ADDR` | `localhost:8080` | Device source gRPC address (ADB operations) |
+| `ORCHESTRATOR_ADDR` | `orchestrator.sair.run:9090` | Orchestrator gRPC address (lock management) |
+| `ORCHESTRATOR_TLS` | `false` (auto-enabled for hosted) | Use TLS for orchestrator connection |
 | `SAIR_API_KEY` | `dev-key-123` | API key for authentication |
 | `ADB_PROXY_PORT` | `5037` | ADB protocol listen port |
 | `PROXY_HTTP_PORT` | `8550` | HTTP API listen port |

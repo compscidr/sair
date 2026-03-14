@@ -17,24 +17,27 @@ func main() {
 	updater.CheckAndUpdate("sair-proxy")
 
 	port := envInt("ADB_PROXY_PORT", 5037)
-	orchestratorAddr := envStr("ORCHESTRATOR_ADDR", "localhost:9090")
-	deviceSourceAddr := envStr("DEVICE_SOURCE_ADDR", "localhost:8080")
+	orchestratorAddr := envStr("ORCHESTRATOR_ADDR", "orchestrator.sair.run:9090")
 	apiKey := envStr("SAIR_API_KEY", "dev-key-123")
 	httpAPIPort := envInt("PROXY_HTTP_PORT", 8550)
 	httpAPIHost := envStr("PROXY_HTTP_HOST", "0.0.0.0")
 	heartbeatInterval := envInt64("HEARTBEAT_INTERVAL_SECONDS", 60)
+	// Auto-enable TLS when using the hosted orchestrator, unless explicitly set
+	_, tlsExplicit := os.LookupEnv("ORCHESTRATOR_TLS")
 	orchestratorTLS := envBool("ORCHESTRATOR_TLS")
+	if !tlsExplicit && orchestratorAddr == "orchestrator.sair.run:9090" {
+		orchestratorTLS = true
+	}
 
 	slog.Info("ADB Proxy starting...", "version", version.Version)
 	slog.Info("config",
 		"adb_port", port,
 		"http_api", httpAPIHost+":"+strconv.Itoa(httpAPIPort),
 		"orchestrator", orchestratorAddr,
-		"device_source", deviceSourceAddr,
 		"tls", orchestratorTLS,
 	)
 
-	commandRouter, err := proxy.NewCommandRouter(orchestratorAddr, deviceSourceAddr, apiKey, orchestratorTLS)
+	commandRouter, err := proxy.NewCommandRouter(orchestratorAddr, apiKey, orchestratorTLS)
 	if err != nil {
 		slog.Error("failed to create command router", "error", err)
 		os.Exit(1)
