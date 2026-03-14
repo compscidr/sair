@@ -149,15 +149,20 @@ func (t *DeviceListTracker) reapAndReport() {
 	staleThreshold := 30 * time.Second
 	now := time.Now()
 
+	var staleAddrs []string
 	t.mu.Lock()
 	for addr, entry := range t.sources {
 		if now.Sub(entry.lastSeen) > staleThreshold {
 			slog.Warn("removing stale device source", "addr", addr)
 			delete(t.sources, addr)
-			t.commandRouter.RemoveDSClient(addr)
+			staleAddrs = append(staleAddrs, addr)
 		}
 	}
 	t.mu.Unlock()
+
+	for _, addr := range staleAddrs {
+		t.commandRouter.RemoveDSClient(addr)
+	}
 
 	t.rebuild()
 

@@ -22,10 +22,10 @@ func main() {
 	httpAPIPort := envInt("PROXY_HTTP_PORT", 8550)
 	httpAPIHost := envStr("PROXY_HTTP_HOST", "0.0.0.0")
 	heartbeatInterval := envInt64("HEARTBEAT_INTERVAL_SECONDS", 60)
+	// Auto-enable TLS when using the hosted orchestrator, unless explicitly set
+	_, tlsExplicit := os.LookupEnv("ORCHESTRATOR_TLS")
 	orchestratorTLS := envBool("ORCHESTRATOR_TLS")
-
-	// Default to TLS when using the hosted orchestrator
-	if !orchestratorTLS && orchestratorAddr == "orchestrator.sair.run:9090" {
+	if !tlsExplicit && orchestratorAddr == "orchestrator.sair.run:9090" {
 		orchestratorTLS = true
 	}
 

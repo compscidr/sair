@@ -288,6 +288,12 @@ func (c *AdbConnection) handleHostCommand(request string) {
 }
 
 func (c *AdbConnection) handleTransportWithID(serial string) {
+	sourceAddr := c.deviceListTracker.GetSourceAddr(serial)
+	if sourceAddr == "" {
+		c.writeFail("no device-source registered for " + serial)
+		return
+	}
+
 	c.writeOkay()
 
 	// tport protocol: send transport ID as 8-byte little-endian after OKAY
@@ -300,27 +306,21 @@ func (c *AdbConnection) handleTransportWithID(serial string) {
 	}
 	slog.Debug("transport (tport) — starting tunnel", "serial", serial, "transportID", transportID)
 
-	// Tunnel all subsequent traffic to the real ADB server through device-source.
-	sourceAddr := c.deviceListTracker.GetSourceAddr(serial)
-	if sourceAddr == "" {
-		slog.Error("no device-source registered for serial", "serial", serial)
-		return
-	}
 	if err := c.commandRouter.ForwardToDevice(sourceAddr, serial, "", c.conn); err != nil {
 		slog.Error("tunnel failed", "serial", serial, "error", err)
 	}
 }
 
 func (c *AdbConnection) handleTransport(serial string) {
+	sourceAddr := c.deviceListTracker.GetSourceAddr(serial)
+	if sourceAddr == "" {
+		c.writeFail("no device-source registered for " + serial)
+		return
+	}
+
 	c.writeOkay()
 	slog.Debug("transport — starting tunnel", "serial", serial)
 
-	// Tunnel all subsequent traffic to the real ADB server through device-source.
-	sourceAddr := c.deviceListTracker.GetSourceAddr(serial)
-	if sourceAddr == "" {
-		slog.Error("no device-source registered for serial", "serial", serial)
-		return
-	}
 	if err := c.commandRouter.ForwardToDevice(sourceAddr, serial, "", c.conn); err != nil {
 		slog.Error("tunnel failed", "serial", serial, "error", err)
 	}
