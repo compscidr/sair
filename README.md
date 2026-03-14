@@ -124,7 +124,6 @@ grpcurl -plaintext localhost:8080 devicesource.DeviceSource/GetDevices
 |---|---|---|
 | `ORCHESTRATOR_ADDR` | `orchestrator.sair.run:9090` | Orchestrator gRPC address (lock management) |
 | `ORCHESTRATOR_TLS` | `true` (auto when using hosted) | Use TLS for orchestrator connection |
-| `DEVICE_SOURCE_ADDR` | `localhost:8080` | Device source gRPC address (ADB operations) |
 | `SAIR_API_KEY` | `dev-key-123` | API key for authentication |
 | `ADB_PROXY_PORT` | `5037` | ADB protocol listen port |
 | `PROXY_HTTP_PORT` | `8550` | HTTP API listen port |

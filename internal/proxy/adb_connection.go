@@ -301,7 +301,12 @@ func (c *AdbConnection) handleTransportWithID(serial string) {
 	slog.Debug("transport (tport) — starting tunnel", "serial", serial, "transportID", transportID)
 
 	// Tunnel all subsequent traffic to the real ADB server through device-source.
-	if err := c.commandRouter.ForwardToDevice(serial, "", c.conn); err != nil {
+	sourceAddr := c.deviceListTracker.GetSourceAddr(serial)
+	if sourceAddr == "" {
+		slog.Error("no device-source registered for serial", "serial", serial)
+		return
+	}
+	if err := c.commandRouter.ForwardToDevice(sourceAddr, serial, "", c.conn); err != nil {
 		slog.Error("tunnel failed", "serial", serial, "error", err)
 	}
 }
@@ -311,7 +316,12 @@ func (c *AdbConnection) handleTransport(serial string) {
 	slog.Debug("transport — starting tunnel", "serial", serial)
 
 	// Tunnel all subsequent traffic to the real ADB server through device-source.
-	if err := c.commandRouter.ForwardToDevice(serial, "", c.conn); err != nil {
+	sourceAddr := c.deviceListTracker.GetSourceAddr(serial)
+	if sourceAddr == "" {
+		slog.Error("no device-source registered for serial", "serial", serial)
+		return
+	}
+	if err := c.commandRouter.ForwardToDevice(sourceAddr, serial, "", c.conn); err != nil {
 		slog.Error("tunnel failed", "serial", serial, "error", err)
 	}
 }

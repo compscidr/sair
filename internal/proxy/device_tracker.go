@@ -12,7 +12,8 @@ import (
 // DeviceListTracker maintains the device list reported by device-sources.
 // Device-sources push their device lists via the proxy's HTTP API; this
 // tracker caches them and periodically reports to the orchestrator for
-// lock management. Also assigns stable transport_id values per serial.
+// lock management. Also assigns stable transport_id values per serial
+// and tracks which source owns each serial for command routing.
 type DeviceListTracker struct {
 	commandRouter *CommandRouter
 
@@ -20,6 +21,7 @@ type DeviceListTracker struct {
 	sources map[string]sourceEntry // sourceAddr -> devices
 
 	devices       atomic.Value // []*pb.DeviceInfo
+	serialToSource sync.Map    // serial -> sourceAddr
 	transportIDs  sync.Map     // serial -> int
 	nextTransport atomic.Int32
 
@@ -73,6 +75,14 @@ func (t *DeviceListTracker) GetDevices() []*pb.DeviceInfo {
 	return t.devices.Load().([]*pb.DeviceInfo)
 }
 
+// GetSourceAddr returns the device-source gRPC address that owns this serial.
+func (t *DeviceListTracker) GetSourceAddr(serial string) string {
+	if v, ok := t.serialToSource.Load(serial); ok {
+		return v.(string)
+	}
+	return ""
+}
+
 // GetTransportID returns the transport_id for a device serial. Returns 0 if unknown.
 func (t *DeviceListTracker) GetTransportID(serial string) int {
 	if v, ok := t.transportIDs.Load(serial); ok {
@@ -98,10 +108,19 @@ func (t *DeviceListTracker) GetSerialByTransportID(transportID int) string {
 func (t *DeviceListTracker) rebuild() {
 	t.mu.Lock()
 	var allDevices []*pb.DeviceInfo
-	for _, entry := range t.sources {
+	serialSourceMap := make(map[string]string) // serial -> sourceAddr
+	for addr, entry := range t.sources {
+		for _, device := range entry.devices {
+			serialSourceMap[device.Serial] = addr
+		}
 		allDevices = append(allDevices, entry.devices...)
 	}
 	t.mu.Unlock()
+
+	// Update serial → source mapping
+	for serial, addr := range serialSourceMap {
+		t.serialToSource.Store(serial, addr)
+	}
 
 	// Assign transport IDs for new devices
 	currentSerials := make(map[string]struct{})
@@ -112,10 +131,11 @@ func (t *DeviceListTracker) rebuild() {
 		}
 	}
 
-	// Remove transport IDs for devices that are gone
+	// Remove transport IDs and source mappings for devices that are gone
 	t.transportIDs.Range(func(key, _ any) bool {
 		if _, exists := currentSerials[key.(string)]; !exists {
 			t.transportIDs.Delete(key)
+			t.serialToSource.Delete(key)
 		}
 		return true
 	})
@@ -134,6 +154,7 @@ func (t *DeviceListTracker) reapAndReport() {
 		if now.Sub(entry.lastSeen) > staleThreshold {
 			slog.Warn("removing stale device source", "addr", addr)
 			delete(t.sources, addr)
+			t.commandRouter.RemoveDSClient(addr)
 		}
 	}
 	t.mu.Unlock()

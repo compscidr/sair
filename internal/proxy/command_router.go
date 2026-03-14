@@ -2,9 +2,11 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"time"
 
 	dspb "github.com/compscidr/sair/proto/devicesource"
@@ -13,7 +15,6 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
-	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // LockResult holds the result of a lock acquisition.
@@ -23,17 +24,20 @@ type LockResult struct {
 }
 
 // CommandRouter is a gRPC client that routes:
-//   - ADB commands directly to the local device-source
+//   - ADB commands to device-sources (connections created lazily from reported source addresses)
 //   - Lock management to the remote orchestrator
 type CommandRouter struct {
 	orchConn   *grpc.ClientConn
 	orchClient pb.OrchestratorClient
-	dsConn     *grpc.ClientConn
-	dsClient   dspb.DeviceSourceClient
 	apiKey     string
+
+	// Device-source connections, created lazily when sources register
+	dsMu    sync.Mutex
+	dsConns map[string]*grpc.ClientConn          // sourceAddr -> conn
+	dsClients map[string]dspb.DeviceSourceClient  // sourceAddr -> client
 }
 
-func NewCommandRouter(orchestratorAddr, deviceSourceAddr, apiKey string, orchestratorTLS bool) (*CommandRouter, error) {
+func NewCommandRouter(orchestratorAddr, apiKey string, orchestratorTLS bool) (*CommandRouter, error) {
 	// Orchestrator connection (remote, may use TLS)
 	var orchOpts []grpc.DialOption
 	if orchestratorTLS {
@@ -47,8 +51,27 @@ func NewCommandRouter(orchestratorAddr, deviceSourceAddr, apiKey string, orchest
 		return nil, err
 	}
 
-	// Device-source connection (local, plaintext)
-	dsConn, err := grpc.NewClient(deviceSourceAddr,
+	return &CommandRouter{
+		orchConn:   orchConn,
+		orchClient: pb.NewOrchestratorClient(orchConn),
+		apiKey:     apiKey,
+		dsConns:    make(map[string]*grpc.ClientConn),
+		dsClients:  make(map[string]dspb.DeviceSourceClient),
+	}, nil
+}
+
+// getOrCreateDSClient returns a device-source gRPC client for the given address,
+// creating a connection lazily if needed.
+func (r *CommandRouter) getOrCreateDSClient(sourceAddr string) (dspb.DeviceSourceClient, error) {
+	r.dsMu.Lock()
+	defer r.dsMu.Unlock()
+
+	if client, ok := r.dsClients[sourceAddr]; ok {
+		return client, nil
+	}
+
+	slog.Info("creating gRPC connection to device-source", "addr", sourceAddr)
+	conn, err := grpc.NewClient(sourceAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(64*1024*1024),
@@ -58,17 +81,26 @@ func NewCommandRouter(orchestratorAddr, deviceSourceAddr, apiKey string, orchest
 		grpc.WithInitialConnWindowSize(16*1024*1024),
 	)
 	if err != nil {
-		orchConn.Close()
-		return nil, err
+		return nil, fmt.Errorf("connect to device-source %s: %w", sourceAddr, err)
 	}
 
-	return &CommandRouter{
-		orchConn:   orchConn,
-		orchClient: pb.NewOrchestratorClient(orchConn),
-		dsConn:     dsConn,
-		dsClient:   dspb.NewDeviceSourceClient(dsConn),
-		apiKey:     apiKey,
-	}, nil
+	client := dspb.NewDeviceSourceClient(conn)
+	r.dsConns[sourceAddr] = conn
+	r.dsClients[sourceAddr] = client
+	return client, nil
+}
+
+// RemoveDSClient closes and removes a device-source connection (called when a source goes stale).
+func (r *CommandRouter) RemoveDSClient(sourceAddr string) {
+	r.dsMu.Lock()
+	defer r.dsMu.Unlock()
+
+	if conn, ok := r.dsConns[sourceAddr]; ok {
+		conn.Close()
+		delete(r.dsConns, sourceAddr)
+		delete(r.dsClients, sourceAddr)
+		slog.Info("removed gRPC connection to device-source", "addr", sourceAddr)
+	}
 }
 
 func (r *CommandRouter) ctx() context.Context {
@@ -82,12 +114,18 @@ func (r *CommandRouter) ctxWithTimeout(d time.Duration) (context.Context, contex
 	return context.WithTimeout(ctx, d)
 }
 
-// ForwardToDevice relays raw bytes between a TCP connection and the device-source's ForwardToDevice gRPC stream.
-func (r *CommandRouter) ForwardToDevice(serial, command string, conn net.Conn) error {
+// ForwardToDevice relays raw bytes between a TCP connection and a device-source's ForwardToDevice gRPC stream.
+// The sourceAddr is the gRPC address of the device-source that owns this serial.
+func (r *CommandRouter) ForwardToDevice(sourceAddr, serial, command string, conn net.Conn) error {
+	client, err := r.getOrCreateDSClient(sourceAddr)
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	stream, err := r.dsClient.ForwardToDevice(ctx)
+	stream, err := client.ForwardToDevice(ctx)
 	if err != nil {
 		return err
 	}
@@ -159,14 +197,6 @@ func (r *CommandRouter) ForwardToDevice(serial, command string, conn net.Conn) e
 	return err
 }
 
-// Device-source operations — device discovery
-
-func (r *CommandRouter) GetDevicesFromSource() (*dspb.Devices, error) {
-	ctx, cancel := r.ctxWithTimeout(10 * time.Second)
-	defer cancel()
-	return r.dsClient.GetDevices(ctx, &emptypb.Empty{})
-}
-
 // Orchestrator operations — lock management only
 
 func (r *CommandRouter) ListDevices() (*pb.DeviceList, error) {
@@ -227,7 +257,11 @@ func (r *CommandRouter) Shutdown() {
 	if err := r.orchConn.Close(); err != nil {
 		slog.Error("failed to close orchestrator connection", "error", err)
 	}
-	if err := r.dsConn.Close(); err != nil {
-		slog.Error("failed to close device-source connection", "error", err)
+	r.dsMu.Lock()
+	for addr, conn := range r.dsConns {
+		if err := conn.Close(); err != nil {
+			slog.Error("failed to close device-source connection", "addr", addr, "error", err)
+		}
 	}
+	r.dsMu.Unlock()
 }

@@ -18,7 +18,6 @@ func main() {
 
 	port := envInt("ADB_PROXY_PORT", 5037)
 	orchestratorAddr := envStr("ORCHESTRATOR_ADDR", "orchestrator.sair.run:9090")
-	deviceSourceAddr := envStr("DEVICE_SOURCE_ADDR", "localhost:8080")
 	apiKey := envStr("SAIR_API_KEY", "dev-key-123")
 	httpAPIPort := envInt("PROXY_HTTP_PORT", 8550)
 	httpAPIHost := envStr("PROXY_HTTP_HOST", "0.0.0.0")
@@ -35,11 +34,10 @@ func main() {
 		"adb_port", port,
 		"http_api", httpAPIHost+":"+strconv.Itoa(httpAPIPort),
 		"orchestrator", orchestratorAddr,
-		"device_source", deviceSourceAddr,
 		"tls", orchestratorTLS,
 	)
 
-	commandRouter, err := proxy.NewCommandRouter(orchestratorAddr, deviceSourceAddr, apiKey, orchestratorTLS)
+	commandRouter, err := proxy.NewCommandRouter(orchestratorAddr, apiKey, orchestratorTLS)
 	if err != nil {
 		slog.Error("failed to create command router", "error", err)
 		os.Exit(1)
