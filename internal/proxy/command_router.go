@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // LockResult holds the result of a lock acquisition.
@@ -47,7 +48,15 @@ func NewCommandRouter(orchestratorAddr, deviceSourceAddr, apiKey string, orchest
 	}
 
 	// Device-source connection (local, plaintext)
-	dsConn, err := grpc.NewClient(deviceSourceAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	dsConn, err := grpc.NewClient(deviceSourceAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(64*1024*1024),
+			grpc.MaxCallSendMsgSize(64*1024*1024),
+		),
+		grpc.WithInitialWindowSize(16*1024*1024),
+		grpc.WithInitialConnWindowSize(16*1024*1024),
+	)
 	if err != nil {
 		orchConn.Close()
 		return nil, err
@@ -73,85 +82,6 @@ func (r *CommandRouter) ctxWithTimeout(d time.Duration) (context.Context, contex
 	return context.WithTimeout(ctx, d)
 }
 
-// ADB operations — go directly to the device-source
-
-func (r *CommandRouter) ExecuteOnDevice(ctx context.Context, serial, command string, onOutput func([]byte) error) error {
-	req := &dspb.DeviceCommand{
-		Serial:  serial,
-		Command: command,
-	}
-	stream, err := r.dsClient.ExecOnDevice(ctx, req)
-	if err != nil {
-		return err
-	}
-	for {
-		result, err := stream.Recv()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if result.Stdout != "" {
-			if err := onOutput([]byte(result.Stdout)); err != nil {
-				return err
-			}
-		}
-		if result.Stderr != "" {
-			if err := onOutput([]byte(result.Stderr)); err != nil {
-				return err
-			}
-		}
-	}
-}
-
-// ExecuteOnDeviceShellV2 runs a command via ExecOnDevice and writes the output
-// using shell v2 binary framing (stdout/stderr/exit packets). This lets ddmlib
-// clients that send shell,v2 requests get properly framed responses without
-// going through the fragile ForwardToDevice bidirectional tunnel.
-//
-// Note: stdin (shell v2 ID 0) is not supported — the underlying ExecOnDevice
-// RPC runs a non-interactive "adb shell <cmd>" subprocess with no stdin pipe.
-// This is fine for the non-interactive commands ddmlib sends (pm install, etc.).
-func (r *CommandRouter) ExecuteOnDeviceShellV2(ctx context.Context, serial, command string, conn net.Conn) error {
-	req := &dspb.DeviceCommand{
-		Serial:  serial,
-		Command: command,
-	}
-	stream, err := r.dsClient.ExecOnDevice(ctx, req)
-	if err != nil {
-		return err
-	}
-	var exitCode int32
-	for {
-		result, err := stream.Recv()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
-		if result.Stdout != "" {
-			if err := WriteShellV2Packet(conn, shellV2Stdout, []byte(result.Stdout)); err != nil {
-				return err
-			}
-		}
-		if result.Stderr != "" {
-			if err := WriteShellV2Packet(conn, shellV2Stderr, []byte(result.Stderr)); err != nil {
-				return err
-			}
-		}
-		// device-source sends exit code as the final message (after all
-		// stdout/stderr has drained), so only capture it from messages
-		// that carry no output to avoid overwriting with protobuf's
-		// default zero from intermediate messages.
-		if result.Stdout == "" && result.Stderr == "" {
-			exitCode = result.ExitCode
-		}
-	}
-	return WriteShellV2Packet(conn, shellV2Exit, []byte{byte(exitCode)})
-}
-
 // ForwardToDevice relays raw bytes between a TCP connection and the device-source's ForwardToDevice gRPC stream.
 func (r *CommandRouter) ForwardToDevice(serial, command string, conn net.Conn) error {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -175,16 +105,19 @@ func (r *CommandRouter) ForwardToDevice(serial, command string, conn net.Conn) e
 		return err
 	}
 
-	done := make(chan error, 2)
+	done := make(chan error, 1)
 
-	// TCP → gRPC
+	// TCP → gRPC (request direction — half-close aware)
 	go func() {
 		buf := make([]byte, 32768)
 		for {
 			n, err := conn.Read(buf)
 			if err != nil {
 				stream.CloseSend()
-				done <- err
+				if err != io.EOF {
+					// Real error — cancel to unblock response direction
+					cancel()
+				}
 				return
 			}
 			data := make([]byte, n)
@@ -192,13 +125,13 @@ func (r *CommandRouter) ForwardToDevice(serial, command string, conn net.Conn) e
 			if err := stream.Send(&dspb.ForwardData{
 				Payload: &dspb.ForwardData_Data{Data: data},
 			}); err != nil {
-				done <- err
+				cancel()
 				return
 			}
 		}
 	}()
 
-	// gRPC → TCP
+	// gRPC → TCP (response direction — drives teardown)
 	go func() {
 		for {
 			resp, err := stream.Recv()
@@ -215,12 +148,10 @@ func (r *CommandRouter) ForwardToDevice(serial, command string, conn net.Conn) e
 		}
 	}()
 
-	// Wait for first direction to finish, then tear down the other.
-	// cancel() unblocks gRPC Recv/Send; SetReadDeadline unblocks TCP Read.
+	// Wait for the response direction to finish, then tear down.
 	err = <-done
 	cancel()
 	conn.SetReadDeadline(time.Now())
-	<-done
 
 	if err == io.EOF {
 		return nil
@@ -228,10 +159,25 @@ func (r *CommandRouter) ForwardToDevice(serial, command string, conn net.Conn) e
 	return err
 }
 
+// Device-source operations — device discovery
+
+func (r *CommandRouter) GetDevicesFromSource() (*dspb.Devices, error) {
+	ctx, cancel := r.ctxWithTimeout(10 * time.Second)
+	defer cancel()
+	return r.dsClient.GetDevices(ctx, &emptypb.Empty{})
+}
+
 // Orchestrator operations — lock management only
 
 func (r *CommandRouter) ListDevices() (*pb.DeviceList, error) {
 	return r.orchClient.ListDevices(r.ctx(), &pb.ListDevicesRequest{})
+}
+
+func (r *CommandRouter) ReportDevices(devices []*pb.DeviceInfo) error {
+	ctx, cancel := r.ctxWithTimeout(10 * time.Second)
+	defer cancel()
+	_, err := r.orchClient.ReportDevices(ctx, &pb.ReportDevicesRequest{Devices: devices})
+	return err
 }
 
 func (r *CommandRouter) AcquireLock(serials map[string]struct{}, deadlineMinutes int64) (*LockResult, error) {

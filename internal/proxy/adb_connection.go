@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -12,29 +11,18 @@ import (
 	pb "github.com/compscidr/sair/proto/orchestrator"
 )
 
-type connectionMode int
-
-const (
-	hostMode      connectionMode = iota
-	transportMode
-)
-
 // AdbConnection handles a single ADB client TCP connection.
 //
-// Implements the state machine:
-//
-//	HOST_MODE → (host:transport:<serial>) → TRANSPORT_MODE
+// Host-mode commands (version, devices, transport selection) are handled
+// locally. Once the client selects a transport, all subsequent traffic is
+// tunneled transparently to the real ADB server through the device-source.
 type AdbConnection struct {
 	conn              net.Conn
 	commandRouter     *CommandRouter
 	deviceListTracker *DeviceListTracker
 	allowedSerials    map[string]struct{} // nil = all, empty = none
 
-	mode            connectionMode
-	transportSerial string
-	keepAlive       bool
-	connCtx         context.Context
-	connCancel      context.CancelFunc
+	keepAlive bool
 }
 
 func NewAdbConnection(
@@ -48,16 +36,13 @@ func NewAdbConnection(
 		commandRouter:     commandRouter,
 		deviceListTracker: deviceListTracker,
 		allowedSerials:    allowedSerials,
-		mode:              hostMode,
 	}
 }
 
 func (c *AdbConnection) Handle() {
-	c.connCtx, c.connCancel = context.WithCancel(context.Background())
 	remoteAddr := c.conn.RemoteAddr()
 	slog.Info("new ADB connection", "remote", remoteAddr)
 	defer func() {
-		c.connCancel()
 		c.conn.Close()
 		slog.Debug("ADB connection closed", "remote", remoteAddr)
 	}()
@@ -71,14 +56,8 @@ func (c *AdbConnection) Handle() {
 			return
 		}
 
-		switch c.mode {
-		case hostMode:
-			c.handleHostCommand(request)
-			if !c.keepAlive {
-				return
-			}
-		case transportMode:
-			c.handleTransportCommand(request)
+		c.handleHostCommand(request)
+		if !c.keepAlive {
 			return
 		}
 	}
@@ -210,7 +189,6 @@ func (c *AdbConnection) handleHostCommand(request string) {
 		slog.Info("received host:kill — ignoring (proxy stays running)")
 
 	case strings.HasPrefix(request, "host:transport:"):
-		c.keepAlive = true
 		serial := strings.TrimPrefix(request, "host:transport:")
 		if !c.isSerialAllowed(serial) {
 			c.writeFail("device " + serial + " not available — use sair-acquire")
@@ -219,7 +197,6 @@ func (c *AdbConnection) handleHostCommand(request string) {
 		c.handleTransport(serial)
 
 	case request == "host:transport-any":
-		c.keepAlive = true
 		devices := c.getVisibleDevices()
 		if len(devices) == 0 {
 			c.writeFail("no devices available — use sair-acquire")
@@ -228,7 +205,6 @@ func (c *AdbConnection) handleHostCommand(request string) {
 		c.handleTransport(devices[0].Serial)
 
 	case strings.HasPrefix(request, "host:tport:serial:"):
-		c.keepAlive = true
 		serial := strings.TrimPrefix(request, "host:tport:serial:")
 		if !c.isSerialAllowed(serial) {
 			c.writeFail("device " + serial + " not available — use sair-acquire")
@@ -237,7 +213,6 @@ func (c *AdbConnection) handleHostCommand(request string) {
 		c.handleTransportWithID(serial)
 
 	case request == "host:tport:any":
-		c.keepAlive = true
 		devices := c.getVisibleDevices()
 		if len(devices) == 0 {
 			c.writeFail("no devices available — use sair-acquire")
@@ -246,7 +221,6 @@ func (c *AdbConnection) handleHostCommand(request string) {
 		c.handleTransportWithID(devices[0].Serial)
 
 	case strings.HasPrefix(request, "host:transport-id:"):
-		c.keepAlive = true
 		idStr := strings.TrimPrefix(request, "host:transport-id:")
 		transportID := 0
 		fmt.Sscanf(idStr, "%d", &transportID)
@@ -314,8 +288,6 @@ func (c *AdbConnection) handleHostCommand(request string) {
 }
 
 func (c *AdbConnection) handleTransportWithID(serial string) {
-	c.transportSerial = serial
-	c.mode = transportMode
 	c.writeOkay()
 
 	// tport protocol: send transport ID as 8-byte little-endian after OKAY
@@ -324,54 +296,22 @@ func (c *AdbConnection) handleTransportWithID(serial string) {
 	binary.LittleEndian.PutUint64(buf, uint64(transportID))
 	if _, err := c.conn.Write(buf); err != nil {
 		slog.Error("failed to write transport ID", "serial", serial, "error", err)
+		return
 	}
-	slog.Debug("transport (tport)", "serial", serial, "transportID", transportID)
+	slog.Debug("transport (tport) — starting tunnel", "serial", serial, "transportID", transportID)
+
+	// Tunnel all subsequent traffic to the real ADB server through device-source.
+	if err := c.commandRouter.ForwardToDevice(serial, "", c.conn); err != nil {
+		slog.Error("tunnel failed", "serial", serial, "error", err)
+	}
 }
 
 func (c *AdbConnection) handleTransport(serial string) {
-	c.transportSerial = serial
-	c.mode = transportMode
 	c.writeOkay()
-	slog.Debug("transport", "serial", serial)
-}
+	slog.Debug("transport — starting tunnel", "serial", serial)
 
-func (c *AdbConnection) handleTransportCommand(request string) {
-	slog.Debug("TRANSPORT command", "serial", c.transportSerial, "request", request)
-
-	switch {
-	case strings.HasPrefix(request, "shell:"):
-		command := strings.TrimPrefix(request, "shell:")
-		c.writeOkay()
-
-		if err := c.commandRouter.ExecuteOnDevice(c.connCtx, c.transportSerial, command, func(data []byte) error {
-			return WriteRaw(c.conn, data)
-		}); err != nil {
-			slog.Error("shell command failed", "serial", c.transportSerial, "error", err)
-		}
-
-	case strings.HasPrefix(request, "shell,"):
-		// shell,v2,TERM=xterm-256color:<command> — used by modern ddmlib/AGP.
-		// Route through ExecOnDevice with v2 framing instead of ForwardToDevice
-		// to avoid bidirectional gRPC tunneling that can deadlock.
-		colonIdx := strings.Index(request, ":")
-		if colonIdx < 0 {
-			c.writeFail("malformed shell,v2 command")
-			return
-		}
-		command := request[colonIdx+1:]
-		c.writeOkay()
-
-		if err := c.commandRouter.ExecuteOnDeviceShellV2(c.connCtx, c.transportSerial, command, c.conn); err != nil {
-			slog.Error("shell v2 command failed", "serial", c.transportSerial, "error", err)
-		}
-
-	default:
-		// Forward unsupported commands (sync:, reboot:, etc.) to the
-		// real ADB server via bidirectional gRPC streaming through device-source.
-		slog.Info("forwarding transport command to device-source", "serial", c.transportSerial, "request", request)
-		if err := c.commandRouter.ForwardToDevice(c.transportSerial, request, c.conn); err != nil {
-			slog.Error("forward failed", "serial", c.transportSerial, "request", request, "error", err)
-			c.writeFail("forward failed: " + err.Error())
-		}
+	// Tunnel all subsequent traffic to the real ADB server through device-source.
+	if err := c.commandRouter.ForwardToDevice(serial, "", c.conn); err != nil {
+		slog.Error("tunnel failed", "serial", serial, "error", err)
 	}
 }

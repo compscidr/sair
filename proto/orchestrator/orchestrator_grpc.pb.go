@@ -30,6 +30,7 @@ const (
 	Orchestrator_AcquireLock_FullMethodName      = "/orchestrator.Orchestrator/AcquireLock"
 	Orchestrator_ReleaseLock_FullMethodName      = "/orchestrator.Orchestrator/ReleaseLock"
 	Orchestrator_LockHeartbeat_FullMethodName    = "/orchestrator.Orchestrator/LockHeartbeat"
+	Orchestrator_ReportDevices_FullMethodName    = "/orchestrator.Orchestrator/ReportDevices"
 )
 
 // OrchestratorClient is the client API for Orchestrator service.
@@ -47,6 +48,7 @@ type OrchestratorClient interface {
 	AcquireLock(ctx context.Context, in *AcquireLockRequest, opts ...grpc.CallOption) (*AcquireLockResponse, error)
 	ReleaseLock(ctx context.Context, in *ReleaseLockRequest, opts ...grpc.CallOption) (*ReleaseLockResponse, error)
 	LockHeartbeat(ctx context.Context, in *LockHeartbeatRequest, opts ...grpc.CallOption) (*LockHeartbeatResponse, error)
+	ReportDevices(ctx context.Context, in *ReportDevicesRequest, opts ...grpc.CallOption) (*ReportDevicesResponse, error)
 }
 
 type orchestratorClient struct {
@@ -188,6 +190,16 @@ func (c *orchestratorClient) LockHeartbeat(ctx context.Context, in *LockHeartbea
 	return out, nil
 }
 
+func (c *orchestratorClient) ReportDevices(ctx context.Context, in *ReportDevicesRequest, opts ...grpc.CallOption) (*ReportDevicesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReportDevicesResponse)
+	err := c.cc.Invoke(ctx, Orchestrator_ReportDevices_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // OrchestratorServer is the server API for Orchestrator service.
 // All implementations must embed UnimplementedOrchestratorServer
 // for forward compatibility.
@@ -203,6 +215,7 @@ type OrchestratorServer interface {
 	AcquireLock(context.Context, *AcquireLockRequest) (*AcquireLockResponse, error)
 	ReleaseLock(context.Context, *ReleaseLockRequest) (*ReleaseLockResponse, error)
 	LockHeartbeat(context.Context, *LockHeartbeatRequest) (*LockHeartbeatResponse, error)
+	ReportDevices(context.Context, *ReportDevicesRequest) (*ReportDevicesResponse, error)
 	mustEmbedUnimplementedOrchestratorServer()
 }
 
@@ -245,6 +258,9 @@ func (UnimplementedOrchestratorServer) ReleaseLock(context.Context, *ReleaseLock
 }
 func (UnimplementedOrchestratorServer) LockHeartbeat(context.Context, *LockHeartbeatRequest) (*LockHeartbeatResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method LockHeartbeat not implemented")
+}
+func (UnimplementedOrchestratorServer) ReportDevices(context.Context, *ReportDevicesRequest) (*ReportDevicesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReportDevices not implemented")
 }
 func (UnimplementedOrchestratorServer) mustEmbedUnimplementedOrchestratorServer() {}
 func (UnimplementedOrchestratorServer) testEmbeddedByValue()                      {}
@@ -440,6 +456,24 @@ func _Orchestrator_LockHeartbeat_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Orchestrator_ReportDevices_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReportDevicesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OrchestratorServer).ReportDevices(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Orchestrator_ReportDevices_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OrchestratorServer).ReportDevices(ctx, req.(*ReportDevicesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Orchestrator_ServiceDesc is the grpc.ServiceDesc for Orchestrator service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -478,6 +512,10 @@ var Orchestrator_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "LockHeartbeat",
 			Handler:    _Orchestrator_LockHeartbeat_Handler,
+		},
+		{
+			MethodName: "ReportDevices",
+			Handler:    _Orchestrator_ReportDevices_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
