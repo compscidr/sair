@@ -71,13 +71,7 @@ func TestDeviceListTrackerStableIDs(t *testing.T) {
 }
 
 func newTestTracker() *DeviceListTracker {
-	tracker := &DeviceListTracker{
-		sources: make(map[string]sourceEntry),
-		stopCh:  make(chan struct{}),
-	}
-	tracker.devices.Store([]*pb.DeviceInfo{})
-	tracker.nextTransport.Store(1)
-	return tracker
+	return NewDeviceListTracker(nil)
 }
 
 func TestGetSourceAddr(t *testing.T) {
