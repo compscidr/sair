@@ -69,3 +69,70 @@ func TestDeviceListTrackerStableIDs(t *testing.T) {
 		t.Errorf("transport ID changed: %d → %d", firstID, secondID)
 	}
 }
+
+func newTestTracker() *DeviceListTracker {
+	return NewDeviceListTracker(nil)
+}
+
+func TestGetSourceAddr(t *testing.T) {
+	tracker := newTestTracker()
+
+	devices := []*pb.DeviceInfo{
+		{Serial: "DEV_A", Manufacturer: "Samsung", Model: "Galaxy"},
+		{Serial: "DEV_B", Manufacturer: "Google", Model: "Pixel"},
+	}
+	tracker.UpdateDevices("source-a:8080", devices)
+
+	if got := tracker.GetSourceAddr("DEV_A"); got != "source-a:8080" {
+		t.Errorf("GetSourceAddr(DEV_A) = %q, want source-a:8080", got)
+	}
+	if got := tracker.GetSourceAddr("DEV_B"); got != "source-a:8080" {
+		t.Errorf("GetSourceAddr(DEV_B) = %q, want source-a:8080", got)
+	}
+	if got := tracker.GetSourceAddr("UNKNOWN"); got != "" {
+		t.Errorf("GetSourceAddr(UNKNOWN) = %q, want empty", got)
+	}
+}
+
+func TestGetSourceAddrTwoSources(t *testing.T) {
+	tracker := newTestTracker()
+
+	tracker.UpdateDevices("source-a:8080", []*pb.DeviceInfo{
+		{Serial: "DEV_A"},
+	})
+	tracker.UpdateDevices("source-b:8080", []*pb.DeviceInfo{
+		{Serial: "DEV_B"},
+	})
+
+	if got := tracker.GetSourceAddr("DEV_A"); got != "source-a:8080" {
+		t.Errorf("GetSourceAddr(DEV_A) = %q, want source-a:8080", got)
+	}
+	if got := tracker.GetSourceAddr("DEV_B"); got != "source-b:8080" {
+		t.Errorf("GetSourceAddr(DEV_B) = %q, want source-b:8080", got)
+	}
+}
+
+func TestSourceAddrClearedWhenDeviceDisappears(t *testing.T) {
+	tracker := newTestTracker()
+
+	tracker.UpdateDevices("source-a:8080", []*pb.DeviceInfo{
+		{Serial: "DEV_A"},
+		{Serial: "DEV_B"},
+	})
+
+	if got := tracker.GetSourceAddr("DEV_B"); got != "source-a:8080" {
+		t.Errorf("GetSourceAddr(DEV_B) = %q, want source-a:8080", got)
+	}
+
+	// Device B disappears
+	tracker.UpdateDevices("source-a:8080", []*pb.DeviceInfo{
+		{Serial: "DEV_A"},
+	})
+
+	if got := tracker.GetSourceAddr("DEV_B"); got != "" {
+		t.Errorf("GetSourceAddr(DEV_B) after removal = %q, want empty", got)
+	}
+	if got := tracker.GetSourceAddr("DEV_A"); got != "source-a:8080" {
+		t.Errorf("GetSourceAddr(DEV_A) = %q, want source-a:8080", got)
+	}
+}
