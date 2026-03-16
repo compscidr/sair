@@ -78,7 +78,7 @@ jobs:
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push device-source
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           target: device-source
@@ -92,7 +92,7 @@ jobs:
             ghcr.io/compscidr/sair-device-source:latest
 
       - name: Build and push proxy
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           target: proxy
