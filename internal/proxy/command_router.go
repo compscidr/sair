@@ -210,14 +210,14 @@ func (r *CommandRouter) ReportDevices(devices []*pb.DeviceInfo) error {
 	return err
 }
 
-func (r *CommandRouter) AcquireLock(serials map[string]struct{}, deadlineMinutes int64) (*LockResult, error) {
+func (r *CommandRouter) AcquireLock(serials map[string]struct{}, deadlineMinutes int64, repo string) (*LockResult, error) {
 	if deadlineMinutes <= 0 {
 		deadlineMinutes = 30
 	}
 	ctx, cancel := r.ctxWithTimeout(time.Duration(deadlineMinutes) * time.Minute)
 	defer cancel()
 
-	req := &pb.AcquireLockRequest{}
+	req := &pb.AcquireLockRequest{Repo: repo}
 	for s := range serials {
 		req.Serials = append(req.Serials, s)
 	}
