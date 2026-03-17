@@ -24,6 +24,7 @@ message JobRequest {
   reserved 2;
   int32 timeout_seconds = 3;
   DeviceRequirements requirements = 4;
+  string repo = 5;
 }
 
 message DeviceRequirements {
