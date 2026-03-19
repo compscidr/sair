@@ -19,32 +19,18 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Orchestrator_SubmitJob_FullMethodName        = "/orchestrator.Orchestrator/SubmitJob"
-	Orchestrator_GetJobStatus_FullMethodName     = "/orchestrator.Orchestrator/GetJobStatus"
-	Orchestrator_ListDevices_FullMethodName      = "/orchestrator.Orchestrator/ListDevices"
-	Orchestrator_Ping_FullMethodName             = "/orchestrator.Orchestrator/Ping"
-	Orchestrator_AcquireDevice_FullMethodName    = "/orchestrator.Orchestrator/AcquireDevice"
-	Orchestrator_ExecuteOnSession_FullMethodName = "/orchestrator.Orchestrator/ExecuteOnSession"
-	Orchestrator_ReleaseDevice_FullMethodName    = "/orchestrator.Orchestrator/ReleaseDevice"
-	Orchestrator_ForwardToSession_FullMethodName = "/orchestrator.Orchestrator/ForwardToSession"
-	Orchestrator_AcquireLock_FullMethodName      = "/orchestrator.Orchestrator/AcquireLock"
-	Orchestrator_ReleaseLock_FullMethodName      = "/orchestrator.Orchestrator/ReleaseLock"
-	Orchestrator_LockHeartbeat_FullMethodName    = "/orchestrator.Orchestrator/LockHeartbeat"
-	Orchestrator_ReportDevices_FullMethodName    = "/orchestrator.Orchestrator/ReportDevices"
+	Orchestrator_ListDevices_FullMethodName   = "/orchestrator.Orchestrator/ListDevices"
+	Orchestrator_AcquireLock_FullMethodName   = "/orchestrator.Orchestrator/AcquireLock"
+	Orchestrator_ReleaseLock_FullMethodName   = "/orchestrator.Orchestrator/ReleaseLock"
+	Orchestrator_LockHeartbeat_FullMethodName = "/orchestrator.Orchestrator/LockHeartbeat"
+	Orchestrator_ReportDevices_FullMethodName = "/orchestrator.Orchestrator/ReportDevices"
 )
 
 // OrchestratorClient is the client API for Orchestrator service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type OrchestratorClient interface {
-	SubmitJob(ctx context.Context, in *JobRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[JobOutput], error)
-	GetJobStatus(ctx context.Context, in *JobStatusRequest, opts ...grpc.CallOption) (*JobStatus, error)
 	ListDevices(ctx context.Context, in *ListDevicesRequest, opts ...grpc.CallOption) (*DeviceList, error)
-	Ping(ctx context.Context, in *PingRequest, opts ...grpc.CallOption) (*PingResponse, error)
-	AcquireDevice(ctx context.Context, in *AcquireDeviceRequest, opts ...grpc.CallOption) (*AcquireDeviceResponse, error)
-	ExecuteOnSession(ctx context.Context, in *SessionCommand, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SessionCommandResult], error)
-	ReleaseDevice(ctx context.Context, in *ReleaseDeviceRequest, opts ...grpc.CallOption) (*ReleaseDeviceResponse, error)
-	ForwardToSession(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[SessionForwardData, SessionForwardData], error)
 	AcquireLock(ctx context.Context, in *AcquireLockRequest, opts ...grpc.CallOption) (*AcquireLockResponse, error)
 	ReleaseLock(ctx context.Context, in *ReleaseLockRequest, opts ...grpc.CallOption) (*ReleaseLockResponse, error)
 	LockHeartbeat(ctx context.Context, in *LockHeartbeatRequest, opts ...grpc.CallOption) (*LockHeartbeatResponse, error)
@@ -59,35 +45,6 @@ func NewOrchestratorClient(cc grpc.ClientConnInterface) OrchestratorClient {
 	return &orchestratorClient{cc}
 }
 
-func (c *orchestratorClient) SubmitJob(ctx context.Context, in *JobRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[JobOutput], error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &Orchestrator_ServiceDesc.Streams[0], Orchestrator_SubmitJob_FullMethodName, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	x := &grpc.GenericClientStream[JobRequest, JobOutput]{ClientStream: stream}
-	if err := x.ClientStream.SendMsg(in); err != nil {
-		return nil, err
-	}
-	if err := x.ClientStream.CloseSend(); err != nil {
-		return nil, err
-	}
-	return x, nil
-}
-
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type Orchestrator_SubmitJobClient = grpc.ServerStreamingClient[JobOutput]
-
-func (c *orchestratorClient) GetJobStatus(ctx context.Context, in *JobStatusRequest, opts ...grpc.CallOption) (*JobStatus, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(JobStatus)
-	err := c.cc.Invoke(ctx, Orchestrator_GetJobStatus_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *orchestratorClient) ListDevices(ctx context.Context, in *ListDevicesRequest, opts ...grpc.CallOption) (*DeviceList, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DeviceList)
@@ -97,68 +54,6 @@ func (c *orchestratorClient) ListDevices(ctx context.Context, in *ListDevicesReq
 	}
 	return out, nil
 }
-
-func (c *orchestratorClient) Ping(ctx context.Context, in *PingRequest, opts ...grpc.CallOption) (*PingResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(PingResponse)
-	err := c.cc.Invoke(ctx, Orchestrator_Ping_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *orchestratorClient) AcquireDevice(ctx context.Context, in *AcquireDeviceRequest, opts ...grpc.CallOption) (*AcquireDeviceResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(AcquireDeviceResponse)
-	err := c.cc.Invoke(ctx, Orchestrator_AcquireDevice_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *orchestratorClient) ExecuteOnSession(ctx context.Context, in *SessionCommand, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SessionCommandResult], error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &Orchestrator_ServiceDesc.Streams[1], Orchestrator_ExecuteOnSession_FullMethodName, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	x := &grpc.GenericClientStream[SessionCommand, SessionCommandResult]{ClientStream: stream}
-	if err := x.ClientStream.SendMsg(in); err != nil {
-		return nil, err
-	}
-	if err := x.ClientStream.CloseSend(); err != nil {
-		return nil, err
-	}
-	return x, nil
-}
-
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type Orchestrator_ExecuteOnSessionClient = grpc.ServerStreamingClient[SessionCommandResult]
-
-func (c *orchestratorClient) ReleaseDevice(ctx context.Context, in *ReleaseDeviceRequest, opts ...grpc.CallOption) (*ReleaseDeviceResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ReleaseDeviceResponse)
-	err := c.cc.Invoke(ctx, Orchestrator_ReleaseDevice_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *orchestratorClient) ForwardToSession(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[SessionForwardData, SessionForwardData], error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &Orchestrator_ServiceDesc.Streams[2], Orchestrator_ForwardToSession_FullMethodName, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	x := &grpc.GenericClientStream[SessionForwardData, SessionForwardData]{ClientStream: stream}
-	return x, nil
-}
-
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type Orchestrator_ForwardToSessionClient = grpc.BidiStreamingClient[SessionForwardData, SessionForwardData]
 
 func (c *orchestratorClient) AcquireLock(ctx context.Context, in *AcquireLockRequest, opts ...grpc.CallOption) (*AcquireLockResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -204,14 +99,7 @@ func (c *orchestratorClient) ReportDevices(ctx context.Context, in *ReportDevice
 // All implementations must embed UnimplementedOrchestratorServer
 // for forward compatibility.
 type OrchestratorServer interface {
-	SubmitJob(*JobRequest, grpc.ServerStreamingServer[JobOutput]) error
-	GetJobStatus(context.Context, *JobStatusRequest) (*JobStatus, error)
 	ListDevices(context.Context, *ListDevicesRequest) (*DeviceList, error)
-	Ping(context.Context, *PingRequest) (*PingResponse, error)
-	AcquireDevice(context.Context, *AcquireDeviceRequest) (*AcquireDeviceResponse, error)
-	ExecuteOnSession(*SessionCommand, grpc.ServerStreamingServer[SessionCommandResult]) error
-	ReleaseDevice(context.Context, *ReleaseDeviceRequest) (*ReleaseDeviceResponse, error)
-	ForwardToSession(grpc.BidiStreamingServer[SessionForwardData, SessionForwardData]) error
 	AcquireLock(context.Context, *AcquireLockRequest) (*AcquireLockResponse, error)
 	ReleaseLock(context.Context, *ReleaseLockRequest) (*ReleaseLockResponse, error)
 	LockHeartbeat(context.Context, *LockHeartbeatRequest) (*LockHeartbeatResponse, error)
@@ -226,29 +114,8 @@ type OrchestratorServer interface {
 // pointer dereference when methods are called.
 type UnimplementedOrchestratorServer struct{}
 
-func (UnimplementedOrchestratorServer) SubmitJob(*JobRequest, grpc.ServerStreamingServer[JobOutput]) error {
-	return status.Error(codes.Unimplemented, "method SubmitJob not implemented")
-}
-func (UnimplementedOrchestratorServer) GetJobStatus(context.Context, *JobStatusRequest) (*JobStatus, error) {
-	return nil, status.Error(codes.Unimplemented, "method GetJobStatus not implemented")
-}
 func (UnimplementedOrchestratorServer) ListDevices(context.Context, *ListDevicesRequest) (*DeviceList, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListDevices not implemented")
-}
-func (UnimplementedOrchestratorServer) Ping(context.Context, *PingRequest) (*PingResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method Ping not implemented")
-}
-func (UnimplementedOrchestratorServer) AcquireDevice(context.Context, *AcquireDeviceRequest) (*AcquireDeviceResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method AcquireDevice not implemented")
-}
-func (UnimplementedOrchestratorServer) ExecuteOnSession(*SessionCommand, grpc.ServerStreamingServer[SessionCommandResult]) error {
-	return status.Error(codes.Unimplemented, "method ExecuteOnSession not implemented")
-}
-func (UnimplementedOrchestratorServer) ReleaseDevice(context.Context, *ReleaseDeviceRequest) (*ReleaseDeviceResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method ReleaseDevice not implemented")
-}
-func (UnimplementedOrchestratorServer) ForwardToSession(grpc.BidiStreamingServer[SessionForwardData, SessionForwardData]) error {
-	return status.Error(codes.Unimplemented, "method ForwardToSession not implemented")
 }
 func (UnimplementedOrchestratorServer) AcquireLock(context.Context, *AcquireLockRequest) (*AcquireLockResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method AcquireLock not implemented")
@@ -283,35 +150,6 @@ func RegisterOrchestratorServer(s grpc.ServiceRegistrar, srv OrchestratorServer)
 	s.RegisterService(&Orchestrator_ServiceDesc, srv)
 }
 
-func _Orchestrator_SubmitJob_Handler(srv interface{}, stream grpc.ServerStream) error {
-	m := new(JobRequest)
-	if err := stream.RecvMsg(m); err != nil {
-		return err
-	}
-	return srv.(OrchestratorServer).SubmitJob(m, &grpc.GenericServerStream[JobRequest, JobOutput]{ServerStream: stream})
-}
-
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type Orchestrator_SubmitJobServer = grpc.ServerStreamingServer[JobOutput]
-
-func _Orchestrator_GetJobStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(JobStatusRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(OrchestratorServer).GetJobStatus(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: Orchestrator_GetJobStatus_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(OrchestratorServer).GetJobStatus(ctx, req.(*JobStatusRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _Orchestrator_ListDevices_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListDevicesRequest)
 	if err := dec(in); err != nil {
@@ -329,78 +167,6 @@ func _Orchestrator_ListDevices_Handler(srv interface{}, ctx context.Context, dec
 	}
 	return interceptor(ctx, in, info, handler)
 }
-
-func _Orchestrator_Ping_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(PingRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(OrchestratorServer).Ping(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: Orchestrator_Ping_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(OrchestratorServer).Ping(ctx, req.(*PingRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _Orchestrator_AcquireDevice_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(AcquireDeviceRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(OrchestratorServer).AcquireDevice(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: Orchestrator_AcquireDevice_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(OrchestratorServer).AcquireDevice(ctx, req.(*AcquireDeviceRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _Orchestrator_ExecuteOnSession_Handler(srv interface{}, stream grpc.ServerStream) error {
-	m := new(SessionCommand)
-	if err := stream.RecvMsg(m); err != nil {
-		return err
-	}
-	return srv.(OrchestratorServer).ExecuteOnSession(m, &grpc.GenericServerStream[SessionCommand, SessionCommandResult]{ServerStream: stream})
-}
-
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type Orchestrator_ExecuteOnSessionServer = grpc.ServerStreamingServer[SessionCommandResult]
-
-func _Orchestrator_ReleaseDevice_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ReleaseDeviceRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(OrchestratorServer).ReleaseDevice(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: Orchestrator_ReleaseDevice_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(OrchestratorServer).ReleaseDevice(ctx, req.(*ReleaseDeviceRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _Orchestrator_ForwardToSession_Handler(srv interface{}, stream grpc.ServerStream) error {
-	return srv.(OrchestratorServer).ForwardToSession(&grpc.GenericServerStream[SessionForwardData, SessionForwardData]{ServerStream: stream})
-}
-
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type Orchestrator_ForwardToSessionServer = grpc.BidiStreamingServer[SessionForwardData, SessionForwardData]
 
 func _Orchestrator_AcquireLock_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(AcquireLockRequest)
@@ -482,24 +248,8 @@ var Orchestrator_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*OrchestratorServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "GetJobStatus",
-			Handler:    _Orchestrator_GetJobStatus_Handler,
-		},
-		{
 			MethodName: "ListDevices",
 			Handler:    _Orchestrator_ListDevices_Handler,
-		},
-		{
-			MethodName: "Ping",
-			Handler:    _Orchestrator_Ping_Handler,
-		},
-		{
-			MethodName: "AcquireDevice",
-			Handler:    _Orchestrator_AcquireDevice_Handler,
-		},
-		{
-			MethodName: "ReleaseDevice",
-			Handler:    _Orchestrator_ReleaseDevice_Handler,
 		},
 		{
 			MethodName: "AcquireLock",
@@ -518,23 +268,6 @@ var Orchestrator_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _Orchestrator_ReportDevices_Handler,
 		},
 	},
-	Streams: []grpc.StreamDesc{
-		{
-			StreamName:    "SubmitJob",
-			Handler:       _Orchestrator_SubmitJob_Handler,
-			ServerStreams: true,
-		},
-		{
-			StreamName:    "ExecuteOnSession",
-			Handler:       _Orchestrator_ExecuteOnSession_Handler,
-			ServerStreams: true,
-		},
-		{
-			StreamName:    "ForwardToSession",
-			Handler:       _Orchestrator_ForwardToSession_Handler,
-			ServerStreams: true,
-			ClientStreams: true,
-		},
-	},
+	Streams:  []grpc.StreamDesc{},
 	Metadata: "proto/orchestrator/orchestrator.proto",
 }
