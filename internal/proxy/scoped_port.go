@@ -50,8 +50,8 @@ func NewScopedPortManager(
 
 // Acquire acquires a lock from the orchestrator (via gRPC) and opens a scoped ADB port.
 // Blocks until the orchestrator grants the lock.
-func (m *ScopedPortManager) Acquire(requestedSerials map[string]struct{}) (*ScopedPort, error) {
-	result, err := m.commandRouter.AcquireLock(requestedSerials, 30)
+func (m *ScopedPortManager) Acquire(requestedSerials map[string]struct{}, repo string) (*ScopedPort, error) {
+	result, err := m.commandRouter.AcquireLock(requestedSerials, 30, repo)
 	if err != nil {
 		return nil, err
 	}

@@ -5,66 +5,11 @@ option go_package = "github.com/compscidr/sair/proto/orchestrator";
 package orchestrator;
 
 service Orchestrator {
-  rpc SubmitJob(JobRequest) returns (stream JobOutput) {}
-  rpc GetJobStatus(JobStatusRequest) returns (JobStatus) {}
   rpc ListDevices(ListDevicesRequest) returns (DeviceList) {}
-  rpc Ping(PingRequest) returns (PingResponse) {}
-  rpc AcquireDevice(AcquireDeviceRequest) returns (AcquireDeviceResponse) {}
-  rpc ExecuteOnSession(SessionCommand) returns (stream SessionCommandResult) {}
-  rpc ReleaseDevice(ReleaseDeviceRequest) returns (ReleaseDeviceResponse) {}
-  rpc ForwardToSession(stream SessionForwardData) returns (stream SessionForwardData) {}
   rpc AcquireLock(AcquireLockRequest) returns (AcquireLockResponse) {}
   rpc ReleaseLock(ReleaseLockRequest) returns (ReleaseLockResponse) {}
   rpc LockHeartbeat(LockHeartbeatRequest) returns (LockHeartbeatResponse) {}
   rpc ReportDevices(ReportDevicesRequest) returns (ReportDevicesResponse) {}
-}
-
-message JobRequest {
-  string command = 1;
-  reserved 2;
-  int32 timeout_seconds = 3;
-  DeviceRequirements requirements = 4;
-}
-
-message DeviceRequirements {
-  int32 min_sdk = 1;
-  int32 max_sdk = 2;
-  string serial = 3;
-  string manufacturer = 4;
-}
-
-message JobOutput {
-  string job_id = 1;
-  JobState state = 2;
-  string stdout = 3;
-  string stderr = 4;
-  int32 exit_code = 5;
-  int32 queue_position = 6;
-  DeviceInfo assigned_device = 7;
-  string error_message = 8;
-}
-
-enum JobState {
-  JOB_STATE_UNKNOWN = 0;
-  QUEUED = 1;
-  RUNNING = 2;
-  COMPLETED = 3;
-  FAILED = 4;
-  CANCELLED = 5;
-}
-
-message JobStatusRequest {
-  string job_id = 1;
-  reserved 2;
-}
-
-message JobStatus {
-  string job_id = 1;
-  JobState state = 2;
-  int32 exit_code = 3;
-  string error_message = 4;
-  DeviceInfo assigned_device = 5;
-  int32 queue_position = 6;
 }
 
 message ListDevicesRequest {
@@ -91,61 +36,9 @@ message DeviceInfo {
   bool busy = 6;
 }
 
-message PingRequest {}
-
-message PingResponse {
-  string version = 1;
-  int32 queued_jobs = 2;
-  int32 running_jobs = 3;
-  int32 available_devices = 4;
-  int32 active_sessions = 5;
-}
-
-message AcquireDeviceRequest {
-  DeviceRequirements requirements = 1;
-  int32 timeout_seconds = 2;
-  int32 idle_timeout_seconds = 3;
-}
-
-message AcquireDeviceResponse {
-  string session_id = 1;
-  DeviceInfo device = 2;
-}
-
-message SessionCommand {
-  string session_id = 1;
-  string command = 2;
-  int32 timeout_seconds = 3;
-}
-
-message SessionCommandResult {
-  string stdout = 1;
-  string stderr = 2;
-  int32 exit_code = 3;
-}
-
-message ReleaseDeviceRequest {
-  string session_id = 1;
-}
-
-message ReleaseDeviceResponse {
-  bool released = 1;
-}
-
-message SessionForwardData {
-  oneof payload {
-    SessionForwardSetup setup = 1;
-    bytes data = 2;
-  }
-}
-
-message SessionForwardSetup {
-  string session_id = 1;
-  string initial_command = 2;
-}
-
 message AcquireLockRequest {
   repeated string serials = 1;
+  string repo = 2;
 }
 
 message AcquireLockResponse {

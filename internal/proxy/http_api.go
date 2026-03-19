@@ -87,7 +87,8 @@ func (a *HTTPApi) handleAcquire(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	sp, err := a.scopedPortManager.Acquire(requestedSerials)
+	repo := r.URL.Query().Get("repo")
+	sp, err := a.scopedPortManager.Acquire(requestedSerials, repo)
 	if err != nil {
 		slog.Error("failed to acquire", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
