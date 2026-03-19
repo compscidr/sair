@@ -41,3 +41,13 @@ jobs:
 
       - name: Test
         run: go test -v -race ./...
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build Docker images
+        run: |
+          docker build --target device-source -t sair-device-source:test .
+          docker build --target proxy -t sair-proxy:test .
