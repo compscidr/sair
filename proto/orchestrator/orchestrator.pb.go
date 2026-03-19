@@ -1235,6 +1235,7 @@ func (x *SessionForwardSetup) GetInitialCommand() string {
 
 type AcquireLockRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
+	Repo          string                 `protobuf:"bytes,2,opt,name=repo,proto3" json:"repo,omitempty"`
 	Serials       []string               `protobuf:"bytes,1,rep,name=serials,proto3" json:"serials,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1268,6 +1269,13 @@ func (x *AcquireLockRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use AcquireLockRequest.ProtoReflect.Descriptor instead.
 func (*AcquireLockRequest) Descriptor() ([]byte, []int) {
 	return file_proto_orchestrator_orchestrator_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *AcquireLockRequest) GetRepo() string {
+	if x != nil {
+		return x.Repo
+	}
+	return ""
 }
 
 func (x *AcquireLockRequest) GetSerials() []string {
@@ -1505,6 +1513,8 @@ func (x *LockHeartbeatResponse) GetAlive() bool {
 	return false
 }
 
+// ReportDevicesRequest is sent by the proxy to report its current device list.
+// The busy field in DeviceInfo is ignored; busy state is managed by the orchestrator.
 type ReportDevicesRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Devices       []*DeviceInfo          `protobuf:"bytes,1,rep,name=devices,proto3" json:"devices,omitempty"`
@@ -1672,8 +1682,9 @@ const file_proto_orchestrator_orchestrator_proto_rawDesc = "" +
 	"\x13SessionForwardSetup\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12'\n" +
-	"\x0finitial_command\x18\x02 \x01(\tR\x0einitialCommand\".\n" +
-	"\x12AcquireLockRequest\x12\x18\n" +
+	"\x0finitial_command\x18\x02 \x01(\tR\x0einitialCommand\"B\n" +
+	"\x12AcquireLockRequest\x12\x12\n" +
+	"\x04repo\x18\x02 \x01(\tR\x04repo\x12\x18\n" +
 	"\aserials\x18\x01 \x03(\tR\aserials\"H\n" +
 	"\x13AcquireLockResponse\x12\x17\n" +
 	"\alock_id\x18\x01 \x01(\tR\x06lockId\x12\x18\n" +
