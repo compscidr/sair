@@ -76,8 +76,10 @@ if [[ -n "$COUNT" ]]; then
         echo "sair-acquire: ERROR: --count and --serial are mutually exclusive" >&2
         exit 1
     fi
-    if [[ ! "$COUNT" =~ ^[0-9]+$ || "$COUNT" -lt 1 ]]; then
-        echo "sair-acquire: ERROR: --count must be a positive integer (got '${COUNT}')" >&2
+    # Bounded by the wire type (int32) so oversized values fail here rather
+    # than in the proxy — and so the comparisons below stay in range.
+    if [[ ! "$COUNT" =~ ^[0-9]{1,10}$ ]] || [[ "$COUNT" -lt 1 || "$COUNT" -gt 2147483647 ]]; then
+        echo "sair-acquire: ERROR: --count must be a positive integer no greater than 2147483647 (got '${COUNT}')" >&2
         exit 1
     fi
 fi

@@ -86,7 +86,9 @@ func TestHTTPApiAcquireCountValidation(t *testing.T) {
 			}
 
 			var resp map[string]string
-			json.Unmarshal(w.Body.Bytes(), &resp)
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("response body is not JSON (%v): %s", err, w.Body.String())
+			}
 			if resp["error"] != tt.wantError {
 				t.Errorf("got error %q, want %q", resp["error"], tt.wantError)
 			}

@@ -214,6 +214,12 @@ func (r *CommandRouter) ReportDevices(devices []*pb.DeviceInfo) error {
 // specific devices, or count to request that many arbitrary free devices.
 // Passing neither locks every device in the tenant's pool.
 func (r *CommandRouter) AcquireLock(serials map[string]struct{}, count int32, deadlineMinutes int64, repo string) (*LockResult, error) {
+	if count < 0 {
+		return nil, fmt.Errorf("count must not be negative: %d", count)
+	}
+	if count > 0 && len(serials) > 0 {
+		return nil, fmt.Errorf("count and serials are mutually exclusive")
+	}
 	if deadlineMinutes <= 0 {
 		deadlineMinutes = 30
 	}

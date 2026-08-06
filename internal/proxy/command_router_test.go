@@ -63,3 +63,28 @@ func TestAcquireLockWithSerialsSendsNoCount(t *testing.T) {
 		t.Errorf("got serials %v, want [DEVICE_A]", fake.lastAcquire.Serials)
 	}
 }
+
+func TestAcquireLockRejectsInvalidCount(t *testing.T) {
+	tests := []struct {
+		name    string
+		serials map[string]struct{}
+		count   int32
+	}{
+		{"negative count", nil, -1},
+		{"count with serials", map[string]struct{}{"DEVICE_A": {}}, 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeOrchClient{}
+			router := &CommandRouter{orchClient: fake, apiKey: "test-key"}
+
+			if _, err := router.AcquireLock(tt.serials, tt.count, 30, ""); err == nil {
+				t.Error("expected an error")
+			}
+			if fake.lastAcquire != nil {
+				t.Error("invalid request was sent to the orchestrator")
+			}
+		})
+	}
+}
