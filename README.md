@@ -145,8 +145,12 @@ this repo's `tools/` directory to `PATH`.
 **Acquire** a device lock (blocks until devices are available):
 
 ```bash
-eval $(sair-acquire)
+eval $(sair-acquire)            # all devices
+eval $(sair-acquire --count 1)  # any one free device
 ```
+
+CI jobs that only need one phone should use `--count 1`, so the rest of the
+pool stays available to other jobs.
 
 After eval, these environment variables are set:
 
@@ -170,6 +174,9 @@ Common options:
 # Acquire specific device(s)
 eval $(sair-acquire --serial DEVICE_A)
 eval $(sair-acquire --serial DEVICE_A,DEVICE_B)
+
+# Acquire any N free devices (mutually exclusive with --serial)
+eval $(sair-acquire --count 2)
 
 # Point to a remote proxy
 eval $(sair-acquire --url http://proxy-host:8550 --api-key my-key)
@@ -290,13 +297,14 @@ jobs:
           SAIR_PROXY_URL: ${{ vars.SAIR_PROXY_URL }}
           SAIR_API_KEY: ${{ secrets.SAIR_API_KEY }}
         run: |
-          ACQUIRE_OUTPUT=$(sair/tools/sair-acquire)
+          ACQUIRE_OUTPUT=$(sair/tools/sair-acquire --count 1)
           eval "$ACQUIRE_OUTPUT"
           # Re-export for subsequent steps
           echo "SAIR_LOCK_ID=$SAIR_LOCK_ID" >> "$GITHUB_ENV"
           echo "SAIR_SERIALS=$SAIR_SERIALS" >> "$GITHUB_ENV"
           echo "SAIR_PROXY_URL=$SAIR_PROXY_URL" >> "$GITHUB_ENV"
           echo "ANDROID_ADB_SERVER_PORT=$ANDROID_ADB_SERVER_PORT" >> "$GITHUB_ENV"
+          echo "ANDROID_SERIAL=$ANDROID_SERIAL" >> "$GITHUB_ENV"
 
       - name: Run connected tests
         run: ./gradlew connectedCheck
@@ -312,6 +320,9 @@ Key points about the workflow:
 
 - `sair-acquire` blocks until a device is available, so jobs queue naturally
   when all devices are busy.
+- `--count 1` locks a single free device instead of the whole pool, leaving the
+  other devices for concurrent jobs. It also sets `ANDROID_SERIAL`, so Gradle
+  targets that one device.
 - `ANDROID_ADB_SERVER_PORT` tells stock `adb` to connect to the proxy's scoped
   port, which only exposes the locked devices.
 - `sair-release` is in an `if: always()` step so the lock is freed even when

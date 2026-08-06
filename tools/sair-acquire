@@ -9,6 +9,8 @@
 #
 # Usage:
 #   eval $(sair-acquire)                          # lock all devices
+#   eval $(sair-acquire --count 1)                # lock any one free device
+#   eval $(sair-acquire --count 2)                # lock any two free devices
 #   eval $(sair-acquire --serial DEVICE_A)        # lock specific device
 #   eval $(sair-acquire --serial DEVICE_A,DEVICE_B)  # lock multiple devices
 #
@@ -28,12 +30,17 @@ set -euo pipefail
 PROXY_URL="${SAIR_PROXY_URL:-http://localhost:8550}"
 API_KEY="${SAIR_API_KEY:-dev-key-123}"
 SERIAL=""
+COUNT=""
 
 # Parse flags
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --serial)
             SERIAL="$2"
+            shift 2
+            ;;
+        --count)
+            COUNT="$2"
             shift 2
             ;;
         --url)
@@ -45,13 +52,14 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --help|-h)
-            echo "Usage: eval \$(sair-acquire [--serial SERIAL[,SERIAL...]] [--url URL] [--api-key KEY])" >&2
+            echo "Usage: eval \$(sair-acquire [--serial SERIAL[,SERIAL...]] [--count N] [--url URL] [--api-key KEY])" >&2
             echo "" >&2
             echo "Acquires a device lock via the SAIR ADB proxy." >&2
             echo "Blocks until devices are available." >&2
             echo "" >&2
             echo "Options:" >&2
             echo "  --serial SERIAL   Specific device(s) to lock (comma-separated, default: all)" >&2
+            echo "  --count N         Lock any N free devices (mutually exclusive with --serial)" >&2
             echo "  --url URL         Proxy API URL (default: \$SAIR_PROXY_URL or http://localhost:8550)" >&2
             echo "  --api-key KEY     API key (default: \$SAIR_API_KEY or dev-key-123)" >&2
             exit 0
@@ -63,12 +71,25 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ -n "$COUNT" ]]; then
+    if [[ -n "$SERIAL" ]]; then
+        echo "sair-acquire: ERROR: --count and --serial are mutually exclusive" >&2
+        exit 1
+    fi
+    if [[ ! "$COUNT" =~ ^[0-9]+$ || "$COUNT" -lt 1 ]]; then
+        echo "sair-acquire: ERROR: --count must be a positive integer (got '${COUNT}')" >&2
+        exit 1
+    fi
+fi
+
 # Build acquire URL
 ACQUIRE_URL="${PROXY_URL}/acquire"
 
 echo "sair-acquire: requesting lock from proxy at ${PROXY_URL}..." >&2
 if [[ -n "$SERIAL" ]]; then
     echo "sair-acquire: devices: ${SERIAL}" >&2
+elif [[ -n "$COUNT" ]]; then
+    echo "sair-acquire: devices: any ${COUNT}" >&2
 else
     echo "sair-acquire: devices: all" >&2
 fi
@@ -78,6 +99,8 @@ fi
 CURL_ARGS=(-s -X POST -H "x-api-key: ${API_KEY}" -w '\n%{http_code}')
 if [[ -n "$SERIAL" ]]; then
     CURL_ARGS+=(-G --data-urlencode "serial=${SERIAL}")
+elif [[ -n "$COUNT" ]]; then
+    CURL_ARGS+=(-G --data-urlencode "count=${COUNT}")
 fi
 RESPONSE=$(curl "${CURL_ARGS[@]}" "${ACQUIRE_URL}") || {
     echo "sair-acquire: ERROR: failed to contact proxy" >&2

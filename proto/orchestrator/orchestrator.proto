@@ -36,9 +36,13 @@ message DeviceInfo {
   bool busy = 6;
 }
 
+// A lock request either names the devices it wants (serials) or asks for a
+// number of arbitrary free devices (count). Setting both is invalid; setting
+// neither means "all devices in the tenant's pool".
 message AcquireLockRequest {
   repeated string serials = 1;
   string repo = 2;
+  int32 count = 3;
 }
 
 message AcquireLockResponse {
