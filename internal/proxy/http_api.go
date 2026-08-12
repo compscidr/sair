@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -87,8 +88,24 @@ func (a *HTTPApi) handleAcquire(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// count requests that many arbitrary free devices instead of named ones,
+	// so it is mutually exclusive with serial. Omitted (or 0) means "all".
+	var count int64
+	if countParam := r.URL.Query().Get("count"); countParam != "" {
+		parsed, err := strconv.ParseInt(countParam, 10, 32)
+		if err != nil || parsed < 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "count parameter must be a non-negative integer"})
+			return
+		}
+		if parsed > 0 && requestedSerials != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "count and serial parameters are mutually exclusive"})
+			return
+		}
+		count = parsed
+	}
+
 	repo := r.URL.Query().Get("repo")
-	sp, err := a.scopedPortManager.Acquire(requestedSerials, repo)
+	sp, err := a.scopedPortManager.Acquire(requestedSerials, int32(count), repo)
 	if err != nil {
 		slog.Error("failed to acquire", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

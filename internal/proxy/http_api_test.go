@@ -56,6 +56,46 @@ func TestHTTPApiAuthRequired(t *testing.T) {
 	}
 }
 
+func TestHTTPApiAcquireCountValidation(t *testing.T) {
+	// Validation happens before the scoped port manager is touched, so a bare
+	// HTTPApi is enough to exercise these paths.
+	api := &HTTPApi{
+		apiKey: "test-key",
+	}
+
+	tests := []struct {
+		name      string
+		query     string
+		wantError string
+	}{
+		{"non-numeric count", "?count=abc", "count parameter must be a non-negative integer"},
+		{"negative count", "?count=-1", "count parameter must be a non-negative integer"},
+		{"count with serial", "?count=1&serial=DEVICE_A", "count and serial parameters are mutually exclusive"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/acquire"+tt.query, nil)
+			req.Header.Set("x-api-key", "test-key")
+			w := httptest.NewRecorder()
+
+			api.handleAcquire(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("got status %d, want %d", w.Code, http.StatusBadRequest)
+			}
+
+			var resp map[string]string
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("response body is not JSON (%v): %s", err, w.Body.String())
+			}
+			if resp["error"] != tt.wantError {
+				t.Errorf("got error %q, want %q", resp["error"], tt.wantError)
+			}
+		})
+	}
+}
+
 func TestHTTPApiReleaseMissingLockID(t *testing.T) {
 	api := &HTTPApi{
 		apiKey: "test-key",
