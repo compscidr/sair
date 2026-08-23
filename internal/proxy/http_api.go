@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -46,13 +47,21 @@ func NewHTTPApi(scopedPortManager *ScopedPortManager, deviceListTracker *DeviceL
 	return api
 }
 
-func (a *HTTPApi) Start() {
+// Start binds the HTTP API port and serves in the background. The bind happens
+// synchronously so a port collision is returned to the caller instead of being
+// logged from a goroutine after "started" has already been announced.
+func (a *HTTPApi) Start() error {
+	ln, err := net.Listen("tcp", a.server.Addr)
+	if err != nil {
+		return err
+	}
 	go func() {
 		slog.Info("proxy HTTP API started", "addr", a.server.Addr)
-		if err := a.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := a.server.Serve(ln); err != nil && err != http.ErrServerClosed {
 			slog.Error("HTTP API failed", "error", err)
 		}
 	}()
+	return nil
 }
 
 func (a *HTTPApi) Stop() {

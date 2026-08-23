@@ -49,6 +49,14 @@ func main() {
 
 	adbProxy := proxy.NewAdbProxy(port, commandRouter, deviceListTracker)
 
+	// Claim the ADB port before the HTTP API opens: /status is used as a
+	// readiness probe, and must never answer for a proxy that is about to die
+	// because something else already holds this port.
+	if err := adbProxy.Listen(); err != nil {
+		slog.Error("proxy failed", "error", err)
+		os.Exit(1)
+	}
+
 	// Graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -63,7 +71,10 @@ func main() {
 		os.Exit(0)
 	}()
 
-	httpAPI.Start()
+	if err := httpAPI.Start(); err != nil {
+		slog.Error("HTTP API failed", "error", err)
+		os.Exit(1)
+	}
 	if err := adbProxy.Start(); err != nil {
 		slog.Error("proxy failed", "error", err)
 		os.Exit(1)
