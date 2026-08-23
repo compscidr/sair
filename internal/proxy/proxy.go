@@ -34,15 +34,28 @@ func NewAdbProxy(
 	}
 }
 
-func (p *AdbProxy) Start() error {
-	p.deviceListTracker.Start()
-	p.running.Store(true)
-
-	var err error
-	p.listener, err = net.Listen("tcp", fmt.Sprintf(":%d", p.port))
+// Listen binds the ADB port without serving. Callers that advertise readiness
+// elsewhere should Listen first, so a port collision — a stale adb server on
+// 5037, say — kills the process before anything reports the proxy as up.
+func (p *AdbProxy) Listen() error {
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", p.port))
 	if err != nil {
 		return err
 	}
+	p.listener = ln
+	return nil
+}
+
+// Start serves the accept loop, binding first if Listen has not already run.
+func (p *AdbProxy) Start() error {
+	if p.listener == nil {
+		if err := p.Listen(); err != nil {
+			return err
+		}
+	}
+
+	p.deviceListTracker.Start()
+	p.running.Store(true)
 
 	slog.Info("ADB proxy listening (bare — no devices visible)", "port", p.port)
 
