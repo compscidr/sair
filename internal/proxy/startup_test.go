@@ -42,13 +42,29 @@ func TestAdbProxyListenFailsWhenPortTaken(t *testing.T) {
 	}
 }
 
-func TestAdbProxyListenThenStopReleasesPort(t *testing.T) {
-	p := NewAdbProxy(0, nil, nil)
+func TestAdbProxyStopReleasesPort(t *testing.T) {
+	p := NewAdbProxy(0, nil, NewDeviceListTracker(nil))
 	if err := p.Listen(); err != nil {
 		t.Fatalf("Listen on port 0 failed: %v", err)
 	}
 	if p.listener == nil {
 		t.Fatal("Listen succeeded but left no listener for Start to serve")
 	}
-	p.listener.Close()
+	addr := p.listener.Addr().String()
+
+	// main depends on Listen actually claiming the port before the HTTP API
+	// starts answering readiness probes, so a non-nil listener is not enough.
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Listen returned but %s is not accepting connections: %v", addr, err)
+	}
+	conn.Close()
+
+	p.Stop()
+
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("Stop did not release %s: %v", addr, err)
+	}
+	ln.Close()
 }
