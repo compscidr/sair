@@ -30,9 +30,13 @@ jobs:
           go-version: "1.27"
 
       - name: Install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          # renovate: datasource=github-releases depName=protocolbuffers/protobuf
+          PROTOC_VERSION: "36.1"
+        run: |
+          curl -fsSLo /tmp/protoc.zip "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          sudo unzip -qo /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
+          protoc --version
 
       - name: Install protoc Go plugins
         run: |
