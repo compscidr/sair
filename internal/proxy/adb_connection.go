@@ -64,10 +64,14 @@ func (c *AdbConnection) Handle() {
 }
 
 // sdkOf returns the API level the device-source reported for serial, or
-// modernSdk when unknown, so an unknown device gets the full feature set.
+// modernSdk when the device is not visible on this connection or its level
+// is unknown, so such a device gets the full feature set.
 func (c *AdbConnection) sdkOf(serial string) int32 {
-	for _, d := range c.deviceListTracker.GetDevices() {
+	for _, d := range c.getVisibleDevices() {
 		if d.Serial == serial {
+			if d.Sdk <= 0 {
+				return modernSdk
+			}
 			return d.Sdk
 		}
 	}
@@ -144,6 +148,10 @@ func (c *AdbConnection) handleHostCommand(request string) {
 
 	case strings.HasPrefix(request, "host-serial:") && strings.HasSuffix(request, ":features"):
 		serial := strings.TrimSuffix(strings.TrimPrefix(request, "host-serial:"), ":features")
+		if !c.isSerialAllowed(serial) {
+			c.writeFail("device " + serial + " not available — use sair-acquire")
+			return
+		}
 		c.writeOkayWithPayload(FeaturesForSdk(c.sdkOf(serial)))
 
 	case request == "host:devices" || request == "host:devices-short":
