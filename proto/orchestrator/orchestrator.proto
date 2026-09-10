@@ -54,8 +54,10 @@ message AcquireLockResponse {
 
 message ReleaseLockRequest {
   string lock_id = 1;
-  // Outcome of the job that held the lock: success, failure, cancelled, or
-  // empty/unknown when the client did not say.
+  // Outcome of the job that held the lock. From the client: success,
+  // failure, cancelled, or empty when it did not say. From the proxy itself:
+  // error (scoped port setup failed) or cancelled (proxy shut down). Locks
+  // that expire without a release are recorded by the orchestrator as timeout.
   string status = 2;
 }
 

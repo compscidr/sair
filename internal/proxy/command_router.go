@@ -242,8 +242,9 @@ func (r *CommandRouter) AcquireLock(serials map[string]struct{}, count int32, de
 	return &LockResult{LockID: resp.LockId, Serials: resultSerials}, nil
 }
 
-// ReleaseLock releases a lock, reporting the job outcome (success, failure,
-// cancelled, or "" when unknown) so the orchestrator can record it.
+// ReleaseLock releases a lock, reporting the job outcome so the orchestrator
+// can record it: success, failure or cancelled from the client ("" when it did
+// not say), or error/cancelled when the proxy releases on its own behalf.
 func (r *CommandRouter) ReleaseLock(lockID, status string) (bool, error) {
 	ctx, cancel := r.ctxWithTimeout(30 * time.Second)
 	defer cancel()
