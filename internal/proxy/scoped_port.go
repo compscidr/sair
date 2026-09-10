@@ -6,6 +6,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	pb "github.com/compscidr/sair/proto/orchestrator"
 )
 
 // ScopedPort represents a scoped ADB listener port for a specific lock.
@@ -17,6 +19,9 @@ type ScopedPort struct {
 	CreatedAt  time.Time
 	stopCh     chan struct{}
 	heartbeatStop chan struct{}
+	// Log of ADB requests made on this port, shipped to the orchestrator on
+	// each heartbeat and on release.
+	Log *LockLog
 }
 
 // ScopedPortManager manages scoped ADB listener ports for per-runner device isolation.
@@ -61,7 +66,7 @@ func (m *ScopedPortManager) Acquire(requestedSerials map[string]struct{}, count 
 	sp, err := m.CreateScopedPort(result.LockID, result.Serials)
 	if err != nil {
 		// Clean up: release the lock if we can't create the port
-		if _, releaseErr := m.commandRouter.ReleaseLock(result.LockID, "error"); releaseErr != nil {
+		if _, releaseErr := m.commandRouter.ReleaseLock(result.LockID, "error", nil); releaseErr != nil {
 			slog.Warn("failed to release lock after scoped port creation failure",
 				"lockId", result.LockID, "error", releaseErr)
 		}
@@ -94,6 +99,7 @@ func (m *ScopedPortManager) CreateScopedPort(lockID string, serials map[string]s
 		CreatedAt:     time.Now(),
 		stopCh:        make(chan struct{}),
 		heartbeatStop: make(chan struct{}),
+		Log:           &LockLog{},
 	}
 
 	// Start accept loop
@@ -109,8 +115,17 @@ func (m *ScopedPortManager) CreateScopedPort(lockID string, serials map[string]s
 
 // Release closes a scoped port and releases the lock on the orchestrator.
 func (m *ScopedPortManager) Release(lockID, status string) bool {
+	m.mu.Lock()
+	sp := m.scopedPorts[lockID]
+	m.mu.Unlock()
+	// Close first: it stops the heartbeat (no concurrent drain) and the
+	// listener (no new tunnels), so the drain below sees everything recorded.
 	closed := m.CloseScopedPort(lockID)
-	released, err := m.commandRouter.ReleaseLock(lockID, status)
+	var entries []*pb.LockLogEntry
+	if sp != nil {
+		entries = sp.Log.Drain()
+	}
+	released, err := m.commandRouter.ReleaseLock(lockID, status, entries)
 	if err != nil {
 		slog.Warn("failed to release lock on orchestrator", "lockId", lockID, "error", err)
 		return closed
@@ -152,16 +167,17 @@ func (m *ScopedPortManager) GetAllScopedPorts() []*ScopedPort {
 // ShutdownAll closes all scoped ports and releases all locks.
 func (m *ScopedPortManager) ShutdownAll() {
 	m.mu.Lock()
-	lockIDs := make([]string, 0, len(m.scopedPorts))
-	for id := range m.scopedPorts {
-		lockIDs = append(lockIDs, id)
+	ports := make([]*ScopedPort, 0, len(m.scopedPorts))
+	for _, sp := range m.scopedPorts {
+		ports = append(ports, sp)
 	}
 	m.mu.Unlock()
 
-	for _, lockID := range lockIDs {
-		m.CloseScopedPort(lockID)
-		if _, err := m.commandRouter.ReleaseLock(lockID, "cancelled"); err != nil {
-			slog.Warn("failed to release lock during shutdown", "lockId", lockID, "error", err)
+	for _, sp := range ports {
+		m.CloseScopedPort(sp.LockID) // stops the heartbeat before we drain
+		entries := sp.Log.Drain()
+		if _, err := m.commandRouter.ReleaseLock(sp.LockID, "cancelled", entries); err != nil {
+			slog.Warn("failed to release lock during shutdown", "lockId", sp.LockID, "error", err)
 		}
 	}
 }
@@ -185,7 +201,7 @@ func (m *ScopedPortManager) runAcceptLoop(sp *ScopedPort) {
 				slog.Warn("failed to set TCP_NODELAY", "remote", conn.RemoteAddr(), "error", err)
 			}
 		}
-		adbConn := NewAdbConnection(conn, m.commandRouter, m.deviceListTracker, sp.Serials)
+		adbConn := NewAdbConnection(conn, m.commandRouter, m.deviceListTracker, sp.Serials, sp.Log)
 		go adbConn.Handle()
 	}
 }
@@ -197,8 +213,10 @@ func (m *ScopedPortManager) runHeartbeat(sp *ScopedPort) {
 	for {
 		select {
 		case <-ticker.C:
-			alive, err := m.commandRouter.LockHeartbeat(sp.LockID)
+			entries := sp.Log.Drain()
+			alive, err := m.commandRouter.LockHeartbeat(sp.LockID, entries)
 			if err != nil {
+				sp.Log.Requeue(entries)
 				slog.Warn("heartbeat failed", "lockId", sp.LockID, "error", err)
 				continue
 			}

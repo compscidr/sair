@@ -52,6 +52,18 @@ message AcquireLockResponse {
   repeated string serials = 2;
 }
 
+// One ADB request a client made on a scoped port while holding a lock, as
+// observed by the proxy: the service string the client asked the device for
+// (e.g. "shell,v2,raw:am instrument -w ..."), when, how long the tunnel stayed
+// open, and how many bytes came back. Together these are the job's log.
+message LockLogEntry {
+  int64 timestamp_ms = 1;
+  string serial = 2;
+  string service = 3;
+  int64 duration_ms = 4;
+  int64 bytes_to_client = 5;
+}
+
 message ReleaseLockRequest {
   string lock_id = 1;
   // Outcome of the job that held the lock. From the client: success,
@@ -59,6 +71,8 @@ message ReleaseLockRequest {
   // error (scoped port setup failed) or cancelled (proxy shut down). Locks
   // that expire without a release are recorded by the orchestrator as timeout.
   string status = 2;
+  // Log entries not yet sent by a heartbeat.
+  repeated LockLogEntry log = 3;
 }
 
 message ReleaseLockResponse {
@@ -67,6 +81,9 @@ message ReleaseLockResponse {
 
 message LockHeartbeatRequest {
   string lock_id = 1;
+  // Log entries recorded since the previous heartbeat, so a lock that later
+  // expires still has its history on the orchestrator.
+  repeated LockLogEntry log = 2;
 }
 
 message LockHeartbeatResponse {

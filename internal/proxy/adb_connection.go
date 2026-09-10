@@ -21,6 +21,7 @@ type AdbConnection struct {
 	commandRouter     *CommandRouter
 	deviceListTracker *DeviceListTracker
 	allowedSerials    map[string]struct{} // nil = all, empty = none
+	lockLog           *LockLog            // nil on the bare port: nothing to attribute requests to
 
 	keepAlive bool
 }
@@ -30,13 +31,25 @@ func NewAdbConnection(
 	commandRouter *CommandRouter,
 	deviceListTracker *DeviceListTracker,
 	allowedSerials map[string]struct{},
+	lockLog *LockLog,
 ) *AdbConnection {
 	return &AdbConnection{
 		conn:              conn,
 		commandRouter:     commandRouter,
 		deviceListTracker: deviceListTracker,
 		allowedSerials:    allowedSerials,
+		lockLog:           lockLog,
 	}
+}
+
+// tunnel relays the rest of the connection to the device, recording the
+// request into the lock's log when this is a scoped-port connection.
+func (c *AdbConnection) tunnel(sourceAddr, serial string) error {
+	conn, obs := newTunnelObserver(c.lockLog, serial, c.conn)
+	if obs != nil {
+		defer obs.finish()
+	}
+	return c.commandRouter.ForwardToDevice(sourceAddr, serial, "", conn)
 }
 
 func (c *AdbConnection) Handle() {
@@ -335,7 +348,7 @@ func (c *AdbConnection) handleTransportWithID(serial string) {
 	}
 	slog.Debug("transport (tport) — starting tunnel", "serial", serial, "transportID", transportID)
 
-	if err := c.commandRouter.ForwardToDevice(sourceAddr, serial, "", c.conn); err != nil {
+	if err := c.tunnel(sourceAddr, serial); err != nil {
 		slog.Error("tunnel failed", "serial", serial, "error", err)
 	}
 }
@@ -350,7 +363,7 @@ func (c *AdbConnection) handleTransport(serial string) {
 	c.writeOkay()
 	slog.Debug("transport — starting tunnel", "serial", serial)
 
-	if err := c.commandRouter.ForwardToDevice(sourceAddr, serial, "", c.conn); err != nil {
+	if err := c.tunnel(sourceAddr, serial); err != nil {
 		slog.Error("tunnel failed", "serial", serial, "error", err)
 	}
 }

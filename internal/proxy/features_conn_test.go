@@ -14,7 +14,7 @@ func featuresRequest(t *testing.T, tracker *DeviceListTracker, allowed map[strin
 	t.Helper()
 	client, server := net.Pipe()
 	defer client.Close()
-	c := NewAdbConnection(server, nil, tracker, allowed)
+	c := NewAdbConnection(server, nil, tracker, allowed, nil)
 	go func() { c.handleHostCommand(request); server.Close() }()
 	buf := make([]byte, 4096)
 	var out []byte

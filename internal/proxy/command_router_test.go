@@ -32,11 +32,14 @@ func TestLockRequestsCarryRunURLAndStatus(t *testing.T) {
 	if got := fake.lastAcquire.RunUrl; got != "https://github.com/compscidr/icmp/actions/runs/1" {
 		t.Errorf("run_url not forwarded, got %q", got)
 	}
-	if _, err := router.ReleaseLock("lock-1", "failure"); err != nil {
+	if _, err := router.ReleaseLock("lock-1", "failure", []*pb.LockLogEntry{{Service: "shell,v2,raw:ls"}}); err != nil {
 		t.Fatalf("ReleaseLock returned error: %v", err)
 	}
 	if fake.lastRelease == nil || fake.lastRelease.LockId != "lock-1" || fake.lastRelease.Status != "failure" {
 		t.Errorf("release not forwarded with status, got %+v", fake.lastRelease)
+	}
+	if len(fake.lastRelease.GetLog()) != 1 || fake.lastRelease.Log[0].Service != "shell,v2,raw:ls" {
+		t.Errorf("release did not carry the log, got %+v", fake.lastRelease.GetLog())
 	}
 }
 

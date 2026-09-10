@@ -245,20 +245,22 @@ func (r *CommandRouter) AcquireLock(serials map[string]struct{}, count int32, de
 // ReleaseLock releases a lock, reporting the job outcome so the orchestrator
 // can record it: success, failure or cancelled from the client ("" when it did
 // not say), or error/cancelled when the proxy releases on its own behalf.
-func (r *CommandRouter) ReleaseLock(lockID, status string) (bool, error) {
+func (r *CommandRouter) ReleaseLock(lockID, status string, log []*pb.LockLogEntry) (bool, error) {
 	ctx, cancel := r.ctxWithTimeout(30 * time.Second)
 	defer cancel()
-	resp, err := r.orchClient.ReleaseLock(ctx, &pb.ReleaseLockRequest{LockId: lockID, Status: status})
+	resp, err := r.orchClient.ReleaseLock(ctx, &pb.ReleaseLockRequest{LockId: lockID, Status: status, Log: log})
 	if err != nil {
 		return false, err
 	}
 	return resp.Released, nil
 }
 
-func (r *CommandRouter) LockHeartbeat(lockID string) (bool, error) {
+// LockHeartbeat keeps the lock alive and ships the log entries recorded since
+// the previous heartbeat.
+func (r *CommandRouter) LockHeartbeat(lockID string, log []*pb.LockLogEntry) (bool, error) {
 	ctx, cancel := r.ctxWithTimeout(30 * time.Second)
 	defer cancel()
-	resp, err := r.orchClient.LockHeartbeat(ctx, &pb.LockHeartbeatRequest{LockId: lockID})
+	resp, err := r.orchClient.LockHeartbeat(ctx, &pb.LockHeartbeatRequest{LockId: lockID, Log: log})
 	if err != nil {
 		return false, err
 	}
