@@ -159,6 +159,8 @@ After eval, these environment variables are set:
 | `SAIR_LOCK_ID` | Lock ID (passed to `sair-release`) |
 | `SAIR_SERIALS` | Comma-separated list of acquired device serials |
 | `ANDROID_ADB_SERVER_PORT` | Scoped ADB port — stock `adb` reads this automatically |
+| `ANDROID_HOME` / `ANDROID_SDK_ROOT` | Shadow SDK whose `platform-tools/adb` calls the real adb with `-P <scoped port>` (only when an SDK was already set) |
+| `SAIR_SDK_SHIM` | Path of that shadow SDK; `sair-release` deletes it |
 | `ANDROID_SERIAL` | First serial (only set when a single device is acquired) |
 | `SAIR_PROXY_URL` | Proxy URL (for `sair-release`) |
 
@@ -298,13 +300,8 @@ jobs:
           SAIR_API_KEY: ${{ secrets.SAIR_API_KEY }}
         run: |
           ACQUIRE_OUTPUT=$(sair/tools/sair-acquire --count 1)
-          eval "$ACQUIRE_OUTPUT"
-          # Re-export for subsequent steps
-          echo "SAIR_LOCK_ID=$SAIR_LOCK_ID" >> "$GITHUB_ENV"
-          echo "SAIR_SERIALS=$SAIR_SERIALS" >> "$GITHUB_ENV"
-          echo "SAIR_PROXY_URL=$SAIR_PROXY_URL" >> "$GITHUB_ENV"
-          echo "ANDROID_ADB_SERVER_PORT=$ANDROID_ADB_SERVER_PORT" >> "$GITHUB_ENV"
-          echo "ANDROID_SERIAL=$ANDROID_SERIAL" >> "$GITHUB_ENV"
+          # Persist every exported variable for the later steps
+          echo "$ACQUIRE_OUTPUT" | sed -n 's/^export //p' >> "$GITHUB_ENV"
 
       - name: Run connected tests
         run: ./gradlew connectedCheck
@@ -325,10 +322,19 @@ Key points about the workflow:
   targets that one device.
 - `ANDROID_ADB_SERVER_PORT` tells stock `adb` to connect to the proxy's scoped
   port, which only exposes the locked devices.
+- `ANDROID_HOME` is repointed at a shadow SDK whose `adb` has the scoped port
+  baked in. AGP 9.4+ runs instrumented tests in a Gradle worker daemon that
+  starts with an empty environment, so `ANDROID_ADB_SERVER_PORT` never reaches
+  the `adb` it shells out to; the shim makes that path work too. It only helps
+  if the exported `ANDROID_HOME` reaches the Gradle step, so persist all of the
+  acquire output (the `sed ... >> "$GITHUB_ENV"` line above) rather than a
+  hand-picked subset.
 - `sair-release` is in an `if: always()` step so the lock is freed even when
   tests fail.
-- Use `ACQUIRE_OUTPUT=$(sair-acquire)` instead of `eval $(sair-acquire)` to
-  propagate exit codes correctly, then eval the output on success.
+- Use `ACQUIRE_OUTPUT=$(sair-acquire)` instead of `eval $(sair-acquire)` so a
+  failed acquire fails the step; the output is plain `export KEY=value` lines,
+  so `sed -n 's/^export //p'` turns it into `$GITHUB_ENV` entries (or `eval`
+  it for a single-step job).
 
 ## Multi-Machine Example
 
