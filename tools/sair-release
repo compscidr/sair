@@ -18,6 +18,9 @@ set -euo pipefail
 PROXY_URL="${SAIR_PROXY_URL:-http://localhost:8550}"
 API_KEY="${SAIR_API_KEY:-dev-key-123}"
 LOCK_ID="${SAIR_LOCK_ID:-}"
+# Job outcome to record: success, failure, cancelled. On GitHub Actions pass
+# --status ${{ job.status }} from an `if: always()` step.
+STATUS="${SAIR_JOB_STATUS:-}"
 
 # Parse flags
 while [[ $# -gt 0 ]]; do
@@ -34,8 +37,12 @@ while [[ $# -gt 0 ]]; do
             API_KEY="$2"
             shift 2
             ;;
+        --status)
+            STATUS="$2"
+            shift 2
+            ;;
         --help|-h)
-            echo "Usage: sair-release [--lock-id ID] [--url URL] [--api-key KEY]" >&2
+            echo "Usage: sair-release [--lock-id ID] [--url URL] [--api-key KEY] [--status success|failure|cancelled]" >&2
             echo "" >&2
             echo "Releases a device lock acquired by sair-acquire." >&2
             echo "" >&2
@@ -43,6 +50,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --lock-id ID   Lock ID to release (default: \$SAIR_LOCK_ID)" >&2
             echo "  --url URL      Proxy API URL (default: \$SAIR_PROXY_URL)" >&2
             echo "  --api-key KEY  API key (default: \$SAIR_API_KEY or dev-key-123)" >&2
+            echo "  --status S     Job outcome to record (default: \$SAIR_JOB_STATUS, else unknown)" >&2
             exit 0
             ;;
         *)
@@ -61,7 +69,7 @@ fi
 echo "sair-release: releasing lock ${LOCK_ID}..." >&2
 HTTP_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
     -H "x-api-key: ${API_KEY}" \
-    -G --data-urlencode "lock_id=${LOCK_ID}" \
+    -G --data-urlencode "lock_id=${LOCK_ID}" --data-urlencode "status=${STATUS}" \
     "${PROXY_URL}/release") || {
     echo "sair-release: ERROR: failed to contact proxy" >&2
     exit 1

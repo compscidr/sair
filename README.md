@@ -308,7 +308,7 @@ jobs:
         if: always()
         env:
           SAIR_API_KEY: ${{ secrets.SAIR_API_KEY }}
-        run: sair/tools/sair-release
+        run: sair/tools/sair-release --status ${{ job.status }}
 ```
 
 Key points about the workflow:
@@ -330,7 +330,12 @@ Key points about the workflow:
   it exports to `$GITHUB_ENV` itself, with raw values, so later steps see them
   without any parsing of the eval output.
 - `sair-release` is in an `if: always()` step so the lock is freed even when
-  tests fail.
+  tests fail. `--status ${{ job.status }}` records the outcome (success,
+  failure, cancelled) on the job in the dashboards; without it a released job
+  shows as unknown, and a lock that expires without a release shows as timeout.
+- On GitHub Actions `sair-acquire` also sends the repository and a link to the
+  run (from `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`, ...), which the dashboards show
+  per job. Elsewhere pass `--repo` and `--run-url`.
 - Outside Actions, use `ACQUIRE_OUTPUT=$(sair-acquire)` instead of
   `eval $(sair-acquire)` so a failed acquire fails the step, then `eval` the
   output on success.
