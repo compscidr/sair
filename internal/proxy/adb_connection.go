@@ -63,6 +63,29 @@ func (c *AdbConnection) Handle() {
 	}
 }
 
+// sdkOf returns the API level the device-source reported for serial, or
+// modernSdk when unknown, so an unknown device gets the full feature set.
+func (c *AdbConnection) sdkOf(serial string) int32 {
+	for _, d := range c.deviceListTracker.GetDevices() {
+		if d.Serial == serial {
+			return d.Sdk
+		}
+	}
+	return modernSdk
+}
+
+// minVisibleSdk is the lowest API level among the devices this connection can
+// see: host:features has no serial, so the answer must hold for all of them.
+func (c *AdbConnection) minVisibleSdk() int32 {
+	min := int32(modernSdk)
+	for _, d := range c.getVisibleDevices() {
+		if d.Sdk > 0 && d.Sdk < min {
+			min = d.Sdk
+		}
+	}
+	return min
+}
+
 func (c *AdbConnection) getVisibleDevices() []*pb.DeviceInfo {
 	all := c.deviceListTracker.GetDevices()
 	if c.allowedSerials == nil {
@@ -116,14 +139,12 @@ func (c *AdbConnection) handleHostCommand(request string) {
 	case request == "host:version":
 		c.writeOkayWithPayload("0029")
 
-	case request == "host:features" || request == "host:host-features" ||
-		(strings.HasPrefix(request, "host-serial:") && strings.HasSuffix(request, ":features")):
-		// Do not advertise abb or abb_exec — the proxy cannot handle these
-		// natively, so they fall through to ForwardToDevice which can deadlock.
-		// Without these features ddmlib falls back to shell:pm ... which the
-		// proxy handles via ExecOnDevice.
-		c.writeOkayWithPayload(
-			"shell_v2,cmd,stat_v2,ls_v2,fixed_push_mkdir,apex,fixed_push_symlink_timestamp,remount_shell,track_app,sendrecv_v2,sendrecv_v2_brotli,sendrecv_v2_lz4,sendrecv_v2_zstd,sendrecv_v2_dry_run_send,openscreen_mdns")
+	case request == "host:features" || request == "host:host-features":
+		c.writeOkayWithPayload(FeaturesForSdk(c.minVisibleSdk()))
+
+	case strings.HasPrefix(request, "host-serial:") && strings.HasSuffix(request, ":features"):
+		serial := strings.TrimSuffix(strings.TrimPrefix(request, "host-serial:"), ":features")
+		c.writeOkayWithPayload(FeaturesForSdk(c.sdkOf(serial)))
 
 	case request == "host:devices" || request == "host:devices-short":
 		devices := c.getVisibleDevices()
