@@ -24,6 +24,13 @@
 #   SAIR_PROXY_URL            Proxy URL (for sair-release)
 #   ANDROID_ADB_SERVER_PORT   Scoped ADB port (stock adb binary reads this)
 #   ANDROID_SERIAL            First serial (only when single device acquired)
+#   ANDROID_HOME / ANDROID_SDK_ROOT
+#                             Shadow SDK whose platform-tools/adb has the
+#                             scoped port baked in (only when an SDK is set).
+#                             AGP 9.4+ shells out to adb from a Gradle worker
+#                             daemon with an empty environment, so the port
+#                             cannot be passed through the environment there.
+#   SAIR_SDK_SHIM             Path of that shadow SDK (sair-release removes it)
 #
 set -euo pipefail
 
@@ -139,6 +146,24 @@ echo "sair-acquire: acquired lock ${LOCK_ID}" >&2
 echo "sair-acquire: devices: ${SERIALS}" >&2
 echo "sair-acquire: scoped ADB port: ${SCOPED_PORT}" >&2
 
+# Build a shadow SDK (symlinks) whose adb wraps the real one with -P <port>.
+# Prints the path, or nothing when no usable SDK is set.
+make_sdk_shim() {
+    local port="$1" sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}" shim f
+    [[ -n "$sdk" && -x "$sdk/platform-tools/adb" ]] || return 0
+    shim="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/sair-sdk-shim-$$"
+    rm -rf "$shim" && mkdir -p "$shim/platform-tools"
+    for f in "$sdk"/*; do
+        [[ "$(basename "$f")" == platform-tools ]] || ln -s "$f" "$shim/"
+    done
+    for f in "$sdk"/platform-tools/*; do
+        [[ "$(basename "$f")" == adb ]] || ln -s "$f" "$shim/platform-tools/"
+    done
+    printf '#!/bin/sh\nexec %q -P %q "$@"\n' "$sdk/platform-tools/adb" "$port" > "$shim/platform-tools/adb"
+    chmod +x "$shim/platform-tools/adb"
+    echo "$shim"
+}
+
 # Output eval-able environment variables (shell-escaped to prevent injection)
 # Heartbeats are managed by the proxy — no background process needed.
 echo "export SAIR_LOCK_ID=$(printf '%q' "$LOCK_ID")"
@@ -150,4 +175,12 @@ echo "export ANDROID_ADB_SERVER_PORT=$(printf '%q' "$SCOPED_PORT")"
 SERIAL_COUNT=$(echo "$SERIALS" | tr ',' '\n' | wc -l)
 if [[ "$SERIAL_COUNT" -eq 1 ]]; then
     echo "export ANDROID_SERIAL=$(printf '%q' "$FIRST_SERIAL")"
+fi
+
+SDK_SHIM=$(make_sdk_shim "$SCOPED_PORT")
+if [[ -n "$SDK_SHIM" ]]; then
+    echo "sair-acquire: shadow SDK with scoped adb: ${SDK_SHIM}" >&2
+    echo "export SAIR_SDK_SHIM=$(printf '%q' "$SDK_SHIM")"
+    echo "export ANDROID_HOME=$(printf '%q' "$SDK_SHIM")"
+    echo "export ANDROID_SDK_ROOT=$(printf '%q' "$SDK_SHIM")"
 fi

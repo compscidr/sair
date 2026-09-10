@@ -159,6 +159,8 @@ After eval, these environment variables are set:
 | `SAIR_LOCK_ID` | Lock ID (passed to `sair-release`) |
 | `SAIR_SERIALS` | Comma-separated list of acquired device serials |
 | `ANDROID_ADB_SERVER_PORT` | Scoped ADB port — stock `adb` reads this automatically |
+| `ANDROID_HOME` / `ANDROID_SDK_ROOT` | Shadow SDK whose `platform-tools/adb` calls the real adb with `-P <scoped port>` (only when an SDK was already set) |
+| `SAIR_SDK_SHIM` | Path of that shadow SDK; `sair-release` deletes it |
 | `ANDROID_SERIAL` | First serial (only set when a single device is acquired) |
 | `SAIR_PROXY_URL` | Proxy URL (for `sair-release`) |
 
@@ -325,6 +327,11 @@ Key points about the workflow:
   targets that one device.
 - `ANDROID_ADB_SERVER_PORT` tells stock `adb` to connect to the proxy's scoped
   port, which only exposes the locked devices.
+- `ANDROID_HOME` is repointed at a shadow SDK whose `adb` has the scoped port
+  baked in. AGP 9.4+ runs instrumented tests in a Gradle worker daemon that
+  starts with an empty environment, so `ANDROID_ADB_SERVER_PORT` never reaches
+  the `adb` it shells out to; the shim makes that path work too. Nothing to do
+  in your workflow beyond `eval`-ing the acquire output.
 - `sair-release` is in an `if: always()` step so the lock is freed even when
   tests fail.
 - Use `ACQUIRE_OUTPUT=$(sair-acquire)` instead of `eval $(sair-acquire)` to
