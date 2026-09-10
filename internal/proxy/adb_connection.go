@@ -46,9 +46,10 @@ func NewAdbConnection(
 // request into the lock's log when this is a scoped-port connection.
 func (c *AdbConnection) tunnel(sourceAddr, serial string) error {
 	conn, obs := newTunnelObserver(c.lockLog, serial, c.conn)
-	err := c.commandRouter.ForwardToDevice(sourceAddr, serial, "", conn)
-	obs.finish()
-	return err
+	if obs != nil {
+		defer obs.finish()
+	}
+	return c.commandRouter.ForwardToDevice(sourceAddr, serial, "", conn)
 }
 
 func (c *AdbConnection) Handle() {

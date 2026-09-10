@@ -101,8 +101,8 @@ func TestLockLogCapDrainRequeue(t *testing.T) {
 
 	long := &pb.LockLogEntry{Service: strings.Repeat("s", maxLockLogServiceLen+50)}
 	l.Record(long)
-	if n := len(l.Drain()[0].Service); n > maxLockLogServiceLen+3 {
-		t.Errorf("service not truncated: %d", n)
+	if got := l.Drain()[0].Service; len(got) > maxLockLogServiceLen || !strings.HasSuffix(got, "…") {
+		t.Errorf("service must be truncated to at most %d bytes ending in an ellipsis, got %d bytes", maxLockLogServiceLen, len(got))
 	}
 
 	var nilLog *LockLog

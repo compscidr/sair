@@ -33,8 +33,10 @@ func (l *LockLog) Record(e *pb.LockLogEntry) {
 	if l == nil || e == nil {
 		return
 	}
+	const ellipsis = "…"
 	if len(e.Service) > maxLockLogServiceLen {
-		e.Service = e.Service[:maxLockLogServiceLen] + "…"
+		// Stay within the byte cap including the marker.
+		e.Service = e.Service[:maxLockLogServiceLen-len(ellipsis)] + ellipsis
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()

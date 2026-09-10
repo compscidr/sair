@@ -118,11 +118,13 @@ func (m *ScopedPortManager) Release(lockID, status string) bool {
 	m.mu.Lock()
 	sp := m.scopedPorts[lockID]
 	m.mu.Unlock()
+	// Close first: it stops the heartbeat (no concurrent drain) and the
+	// listener (no new tunnels), so the drain below sees everything recorded.
+	closed := m.CloseScopedPort(lockID)
 	var entries []*pb.LockLogEntry
 	if sp != nil {
 		entries = sp.Log.Drain()
 	}
-	closed := m.CloseScopedPort(lockID)
 	released, err := m.commandRouter.ReleaseLock(lockID, status, entries)
 	if err != nil {
 		slog.Warn("failed to release lock on orchestrator", "lockId", lockID, "error", err)
@@ -172,8 +174,8 @@ func (m *ScopedPortManager) ShutdownAll() {
 	m.mu.Unlock()
 
 	for _, sp := range ports {
+		m.CloseScopedPort(sp.LockID) // stops the heartbeat before we drain
 		entries := sp.Log.Drain()
-		m.CloseScopedPort(sp.LockID)
 		if _, err := m.commandRouter.ReleaseLock(sp.LockID, "cancelled", entries); err != nil {
 			slog.Warn("failed to release lock during shutdown", "lockId", sp.LockID, "error", err)
 		}
