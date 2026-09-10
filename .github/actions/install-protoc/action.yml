@@ -1,0 +1,19 @@
+name: Install protoc
+description: Install a pinned protoc release into /usr/local and assert its version
+inputs:
+  version:
+    description: protoc release version
+    # renovate: datasource=github-releases depName=protocolbuffers/protobuf
+    default: "36.1"
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        PROTOC_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        curl -fsSLo /tmp/protoc.zip "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+        sudo unzip -qo /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
+        got=$(protoc --version)
+        [ "$got" = "libprotoc ${PROTOC_VERSION}" ] || { echo "::error::expected libprotoc ${PROTOC_VERSION}, got '${got}'"; exit 1; }
