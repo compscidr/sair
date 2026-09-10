@@ -5,7 +5,8 @@
 # ADB port that only exposes the locked devices.
 #
 # Blocks until the requested devices are available, then prints
-# environment variables to stdout for eval.
+# environment variables to stdout for eval. On GitHub Actions (GITHUB_ENV
+# set) the same variables are also appended to $GITHUB_ENV for later steps.
 #
 # Usage:
 #   eval $(sair-acquire)                          # lock all devices
@@ -151,7 +152,14 @@ echo "sair-acquire: scoped ADB port: ${SCOPED_PORT}" >&2
 # Prints the path, or nothing when no usable SDK is set.
 make_sdk_shim() {
     local port="$1" sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}" shim f
-    [[ -n "$sdk" && -x "$sdk/platform-tools/adb" ]] || return 0
+    if [[ -z "$sdk" ]]; then
+        echo "sair-acquire: ANDROID_HOME/ANDROID_SDK_ROOT not set; not creating the shadow SDK (AGP 9.4+ instrumented tests need it)" >&2
+        return 0
+    fi
+    if [[ ! -x "$sdk/platform-tools/adb" ]]; then
+        echo "sair-acquire: no executable ${sdk}/platform-tools/adb; not creating the shadow SDK" >&2
+        return 0
+    fi
     shim=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/sair-sdk-shim-XXXXXX") || return 0
     mkdir -p "$shim/platform-tools"
     for f in "$sdk"/*; do
@@ -166,22 +174,30 @@ make_sdk_shim() {
     echo "$shim"
 }
 
-# Output eval-able environment variables (shell-escaped to prevent injection)
+# Print an eval-able, shell-escaped export line; on GitHub Actions also append
+# the raw value to $GITHUB_ENV so later steps see it without any re-parsing.
+emit_var() {
+    echo "export $1=$(printf '%q' "$2")"
+    if [[ -n "${GITHUB_ENV:-}" ]]; then
+        printf '%s=%s\n' "$1" "$2" >> "$GITHUB_ENV"
+    fi
+}
+
 # Heartbeats are managed by the proxy — no background process needed.
-echo "export SAIR_LOCK_ID=$(printf '%q' "$LOCK_ID")"
-echo "export SAIR_SERIALS=$(printf '%q' "$SERIALS")"
-echo "export SAIR_PROXY_URL=$(printf '%q' "$PROXY_URL")"
-echo "export ANDROID_ADB_SERVER_PORT=$(printf '%q' "$SCOPED_PORT")"
+emit_var SAIR_LOCK_ID "$LOCK_ID"
+emit_var SAIR_SERIALS "$SERIALS"
+emit_var SAIR_PROXY_URL "$PROXY_URL"
+emit_var ANDROID_ADB_SERVER_PORT "$SCOPED_PORT"
 # Only set ANDROID_SERIAL when a single device was requested, so that
 # multi-device workflows (e.g. connectedCheck) can target all devices.
 SERIAL_COUNT=$(echo "$SERIALS" | tr ',' '\n' | wc -l)
 if [[ "$SERIAL_COUNT" -eq 1 ]]; then
-    echo "export ANDROID_SERIAL=$(printf '%q' "$FIRST_SERIAL")"
+    emit_var ANDROID_SERIAL "$FIRST_SERIAL"
 fi
 
 SDK_SHIM=$(make_sdk_shim "$SCOPED_PORT")
 if [[ -n "$SDK_SHIM" ]]; then
     echo "sair-acquire: shadow SDK with scoped adb: ${SDK_SHIM}" >&2
-    echo "export ANDROID_HOME=$(printf '%q' "$SDK_SHIM")"
-    echo "export ANDROID_SDK_ROOT=$(printf '%q' "$SDK_SHIM")"
+    emit_var ANDROID_HOME "$SDK_SHIM"
+    emit_var ANDROID_SDK_ROOT "$SDK_SHIM"
 fi
