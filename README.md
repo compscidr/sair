@@ -298,9 +298,8 @@ jobs:
           SAIR_PROXY_URL: ${{ vars.SAIR_PROXY_URL }}
           SAIR_API_KEY: ${{ secrets.SAIR_API_KEY }}
         run: |
-          ACQUIRE_OUTPUT=$(sair/tools/sair-acquire --count 1)
-          # Persist every exported variable for the later steps
-          echo "$ACQUIRE_OUTPUT" | sed -n 's/^export //p' >> "$GITHUB_ENV"
+          # Also appends every variable to $GITHUB_ENV for the later steps
+          sair/tools/sair-acquire --count 1 > /dev/null
 
       - name: Run connected tests
         run: ./gradlew connectedCheck
@@ -324,16 +323,17 @@ Key points about the workflow:
 - `ANDROID_HOME` is repointed at a shadow SDK whose `adb` has the scoped port
   baked in. AGP 9.4+ runs instrumented tests in a Gradle worker daemon that
   starts with an empty environment, so `ANDROID_ADB_SERVER_PORT` never reaches
-  the `adb` it shells out to; the shim makes that path work too. It only helps
-  if the exported `ANDROID_HOME` reaches the Gradle step, so persist all of the
-  acquire output (the `sed ... >> "$GITHUB_ENV"` line above) rather than a
-  hand-picked subset.
+  the `adb` it shells out to; the shim makes that path work too. It needs
+  `ANDROID_HOME` or `ANDROID_SDK_ROOT` to be set when `sair-acquire` runs, and
+  warns on stderr when it is not.
+- On GitHub Actions (`GITHUB_ENV` set) `sair-acquire` appends every variable
+  it exports to `$GITHUB_ENV` itself, with raw values, so later steps see them
+  without any parsing of the eval output.
 - `sair-release` is in an `if: always()` step so the lock is freed even when
   tests fail.
-- Use `ACQUIRE_OUTPUT=$(sair-acquire)` instead of `eval $(sair-acquire)` so a
-  failed acquire fails the step; the output is plain `export KEY=value` lines,
-  so `sed -n 's/^export //p'` turns it into `$GITHUB_ENV` entries (or `eval`
-  it for a single-step job).
+- Outside Actions, use `ACQUIRE_OUTPUT=$(sair-acquire)` instead of
+  `eval $(sair-acquire)` so a failed acquire fails the step, then `eval` the
+  output on success.
 
 ## Multi-Machine Example
 
