@@ -114,7 +114,8 @@ func (a *HTTPApi) handleAcquire(w http.ResponseWriter, r *http.Request) {
 	}
 
 	repo := r.URL.Query().Get("repo")
-	sp, err := a.scopedPortManager.Acquire(requestedSerials, int32(count), repo)
+	runURL := r.URL.Query().Get("run_url")
+	sp, err := a.scopedPortManager.Acquire(requestedSerials, int32(count), repo, runURL)
 	if err != nil {
 		slog.Error("failed to acquire", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -145,7 +146,7 @@ func (a *HTTPApi) handleRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	released := a.scopedPortManager.Release(lockID)
+	released := a.scopedPortManager.Release(lockID, r.URL.Query().Get("status"))
 	if released {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "released"})
 	} else {

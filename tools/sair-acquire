@@ -18,6 +18,8 @@
 # Environment variables:
 #   SAIR_PROXY_URL   Proxy HTTP API URL (default: http://localhost:8550)
 #   SAIR_API_KEY     API key for authentication (default: dev-key-123)
+#   On GitHub Actions the repo (GITHUB_REPOSITORY) and a link to the run are
+#   sent along automatically so the orchestrator can show them per job.
 #
 # After eval, these are exported:
 #   SAIR_LOCK_ID              Lock ID for releasing later
@@ -40,6 +42,12 @@ PROXY_URL="${SAIR_PROXY_URL:-http://localhost:8550}"
 API_KEY="${SAIR_API_KEY:-dev-key-123}"
 SERIAL=""
 COUNT=""
+REPO="${GITHUB_REPOSITORY:-}"
+RUN_URL=""
+if [[ -n "${GITHUB_SERVER_URL:-}" && -n "${GITHUB_REPOSITORY:-}" && -n "${GITHUB_RUN_ID:-}" ]]; then
+    RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+    [[ -n "${GITHUB_RUN_ATTEMPT:-}" ]] && RUN_URL="${RUN_URL}/attempts/${GITHUB_RUN_ATTEMPT}"
+fi
 
 # Parse flags
 while [[ $# -gt 0 ]]; do
@@ -60,8 +68,16 @@ while [[ $# -gt 0 ]]; do
             API_KEY="$2"
             shift 2
             ;;
+        --repo)
+            REPO="$2"
+            shift 2
+            ;;
+        --run-url)
+            RUN_URL="$2"
+            shift 2
+            ;;
         --help|-h)
-            echo "Usage: eval \$(sair-acquire [--serial SERIAL[,SERIAL...]] [--count N] [--url URL] [--api-key KEY])" >&2
+            echo "Usage: eval \$(sair-acquire [--serial SERIAL[,SERIAL...]] [--count N] [--url URL] [--api-key KEY] [--repo OWNER/NAME] [--run-url URL])" >&2
             echo "" >&2
             echo "Acquires a device lock via the SAIR ADB proxy." >&2
             echo "Blocks until devices are available." >&2
@@ -71,6 +87,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --count N         Lock any N free devices (mutually exclusive with --serial)" >&2
             echo "  --url URL         Proxy API URL (default: \$SAIR_PROXY_URL or http://localhost:8550)" >&2
             echo "  --api-key KEY     API key (default: \$SAIR_API_KEY or dev-key-123)" >&2
+            echo "  --repo OWNER/NAME Repository shown on the job (default: \$GITHUB_REPOSITORY)" >&2
+            echo "  --run-url URL     Link to the CI run shown on the job (default: built from GITHUB_* vars)" >&2
             exit 0
             ;;
         *)
@@ -107,12 +125,14 @@ fi
 
 # POST /acquire (blocks until available)
 # Use --data-urlencode to safely encode serial (may contain ':' for TCP devices)
-CURL_ARGS=(-s -X POST -H "x-api-key: ${API_KEY}" -w '\n%{http_code}')
+CURL_ARGS=(-s -X POST -H "x-api-key: ${API_KEY}" -w '\n%{http_code}' -G)
 if [[ -n "$SERIAL" ]]; then
-    CURL_ARGS+=(-G --data-urlencode "serial=${SERIAL}")
+    CURL_ARGS+=(--data-urlencode "serial=${SERIAL}")
 elif [[ -n "$COUNT" ]]; then
-    CURL_ARGS+=(-G --data-urlencode "count=${COUNT}")
+    CURL_ARGS+=(--data-urlencode "count=${COUNT}")
 fi
+[[ -n "$REPO" ]] && CURL_ARGS+=(--data-urlencode "repo=${REPO}")
+[[ -n "$RUN_URL" ]] && CURL_ARGS+=(--data-urlencode "run_url=${RUN_URL}")
 RESPONSE=$(curl "${CURL_ARGS[@]}" "${ACQUIRE_URL}") || {
     echo "sair-acquire: ERROR: failed to contact proxy" >&2
     exit 1

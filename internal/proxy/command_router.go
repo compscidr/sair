@@ -213,7 +213,7 @@ func (r *CommandRouter) ReportDevices(devices []*pb.DeviceInfo) error {
 // AcquireLock asks the orchestrator for a lock. Pass serials to request
 // specific devices, or count to request that many arbitrary free devices.
 // Passing neither locks every device in the tenant's pool.
-func (r *CommandRouter) AcquireLock(serials map[string]struct{}, count int32, deadlineMinutes int64, repo string) (*LockResult, error) {
+func (r *CommandRouter) AcquireLock(serials map[string]struct{}, count int32, deadlineMinutes int64, repo, runURL string) (*LockResult, error) {
 	if count < 0 {
 		return nil, fmt.Errorf("count must not be negative: %d", count)
 	}
@@ -226,7 +226,7 @@ func (r *CommandRouter) AcquireLock(serials map[string]struct{}, count int32, de
 	ctx, cancel := r.ctxWithTimeout(time.Duration(deadlineMinutes) * time.Minute)
 	defer cancel()
 
-	req := &pb.AcquireLockRequest{Repo: repo, Count: count}
+	req := &pb.AcquireLockRequest{Repo: repo, Count: count, RunUrl: runURL}
 	for s := range serials {
 		req.Serials = append(req.Serials, s)
 	}
@@ -242,10 +242,12 @@ func (r *CommandRouter) AcquireLock(serials map[string]struct{}, count int32, de
 	return &LockResult{LockID: resp.LockId, Serials: resultSerials}, nil
 }
 
-func (r *CommandRouter) ReleaseLock(lockID string) (bool, error) {
+// ReleaseLock releases a lock, reporting the job outcome (success, failure,
+// cancelled, or "" when unknown) so the orchestrator can record it.
+func (r *CommandRouter) ReleaseLock(lockID, status string) (bool, error) {
 	ctx, cancel := r.ctxWithTimeout(30 * time.Second)
 	defer cancel()
-	resp, err := r.orchClient.ReleaseLock(ctx, &pb.ReleaseLockRequest{LockId: lockID})
+	resp, err := r.orchClient.ReleaseLock(ctx, &pb.ReleaseLockRequest{LockId: lockID, Status: status})
 	if err != nil {
 		return false, err
 	}

@@ -53,15 +53,15 @@ func NewScopedPortManager(
 //
 // Pass requestedSerials for specific devices, or count for that many arbitrary
 // free devices. Passing neither locks every device in the tenant's pool.
-func (m *ScopedPortManager) Acquire(requestedSerials map[string]struct{}, count int32, repo string) (*ScopedPort, error) {
-	result, err := m.commandRouter.AcquireLock(requestedSerials, count, 30, repo)
+func (m *ScopedPortManager) Acquire(requestedSerials map[string]struct{}, count int32, repo, runURL string) (*ScopedPort, error) {
+	result, err := m.commandRouter.AcquireLock(requestedSerials, count, 30, repo, runURL)
 	if err != nil {
 		return nil, err
 	}
 	sp, err := m.CreateScopedPort(result.LockID, result.Serials)
 	if err != nil {
 		// Clean up: release the lock if we can't create the port
-		if _, releaseErr := m.commandRouter.ReleaseLock(result.LockID); releaseErr != nil {
+		if _, releaseErr := m.commandRouter.ReleaseLock(result.LockID, "error"); releaseErr != nil {
 			slog.Warn("failed to release lock after scoped port creation failure",
 				"lockId", result.LockID, "error", releaseErr)
 		}
@@ -108,9 +108,9 @@ func (m *ScopedPortManager) CreateScopedPort(lockID string, serials map[string]s
 }
 
 // Release closes a scoped port and releases the lock on the orchestrator.
-func (m *ScopedPortManager) Release(lockID string) bool {
+func (m *ScopedPortManager) Release(lockID, status string) bool {
 	closed := m.CloseScopedPort(lockID)
-	released, err := m.commandRouter.ReleaseLock(lockID)
+	released, err := m.commandRouter.ReleaseLock(lockID, status)
 	if err != nil {
 		slog.Warn("failed to release lock on orchestrator", "lockId", lockID, "error", err)
 		return closed
@@ -160,7 +160,7 @@ func (m *ScopedPortManager) ShutdownAll() {
 
 	for _, lockID := range lockIDs {
 		m.CloseScopedPort(lockID)
-		if _, err := m.commandRouter.ReleaseLock(lockID); err != nil {
+		if _, err := m.commandRouter.ReleaseLock(lockID, "cancelled"); err != nil {
 			slog.Warn("failed to release lock during shutdown", "lockId", lockID, "error", err)
 		}
 	}
