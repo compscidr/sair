@@ -67,12 +67,6 @@ HTTP_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
     exit 1
 }
 
-# Drop the shadow SDK sair-acquire built for this lock, if any. Best effort:
-# a leftover temp dir must never keep the device locked.
-if [[ -n "${SAIR_SDK_SHIM:-}" && "$(basename "$SAIR_SDK_SHIM")" == sair-sdk-shim-* ]]; then
-    rm -rf "$SAIR_SDK_SHIM" || echo "sair-release: WARNING: could not remove ${SAIR_SDK_SHIM}" >&2
-fi
-
 case "${HTTP_STATUS}" in
     200|204)
         echo "sair-release: released" >&2

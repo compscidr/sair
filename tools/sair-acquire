@@ -30,7 +30,8 @@
 #                             AGP 9.4+ shells out to adb from a Gradle worker
 #                             daemon with an empty environment, so the port
 #                             cannot be passed through the environment there.
-#   SAIR_SDK_SHIM             Path of that shadow SDK (sair-release removes it)
+#                             It lives under $RUNNER_TEMP (or $TMPDIR) and is
+#                             left in place: later steps still use it.
 #
 set -euo pipefail
 
@@ -181,7 +182,6 @@ fi
 SDK_SHIM=$(make_sdk_shim "$SCOPED_PORT")
 if [[ -n "$SDK_SHIM" ]]; then
     echo "sair-acquire: shadow SDK with scoped adb: ${SDK_SHIM}" >&2
-    echo "export SAIR_SDK_SHIM=$(printf '%q' "$SDK_SHIM")"
     echo "export ANDROID_HOME=$(printf '%q' "$SDK_SHIM")"
     echo "export ANDROID_SDK_ROOT=$(printf '%q' "$SDK_SHIM")"
 fi

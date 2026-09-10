@@ -159,8 +159,7 @@ After eval, these environment variables are set:
 | `SAIR_LOCK_ID` | Lock ID (passed to `sair-release`) |
 | `SAIR_SERIALS` | Comma-separated list of acquired device serials |
 | `ANDROID_ADB_SERVER_PORT` | Scoped ADB port — stock `adb` reads this automatically |
-| `ANDROID_HOME` / `ANDROID_SDK_ROOT` | Shadow SDK whose `platform-tools/adb` calls the real adb with `-P <scoped port>` (only when an SDK was already set) |
-| `SAIR_SDK_SHIM` | Path of that shadow SDK; `sair-release` deletes it |
+| `ANDROID_HOME` / `ANDROID_SDK_ROOT` | Shadow SDK under `$RUNNER_TEMP` (or `$TMPDIR`) whose `platform-tools/adb` calls the real adb with `-P <scoped port>`; only when an SDK was already set. Left in place so steps after `sair-release` keep working |
 | `ANDROID_SERIAL` | First serial (only set when a single device is acquired) |
 | `SAIR_PROXY_URL` | Proxy URL (for `sair-release`) |
 
