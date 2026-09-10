@@ -333,6 +333,11 @@ Key points about the workflow:
   tests fail. `--status ${{ job.status }}` records the outcome (success,
   failure, cancelled) on the job in the dashboards; without it a released job
   shows as unknown, and a lock that expires without a release shows as timeout.
+- While a lock is held, the proxy records every ADB request made on the scoped
+  port (the service string, when, how long the device session lasted, bytes
+  returned) and ships it to the orchestrator on each heartbeat and on release,
+  so the job pages show what actually ran on the device even for jobs that
+  timed out. The bare port records nothing.
 - On GitHub Actions `sair-acquire` also sends the repository and a link to the
   run (from `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`, ...), which the dashboards show
   per job. Elsewhere pass `--repo` and `--run-url`.
