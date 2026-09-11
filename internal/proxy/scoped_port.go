@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -248,9 +249,13 @@ func (m *ScopedPortManager) runKeepalive(sp *ScopedPort) {
 				continue
 			}
 			if err := m.commandRouter.SendLockLog(sp.LockID, entries); err != nil {
-				// No stream right now (reconnecting, or unary fallback): keep the
-				// entries; the next flush or the unary heartbeat ships them.
+				// Keep the entries; the next flush or the unary heartbeat ships them.
+				// No stream (reconnecting, or unary fallback) is expected and quiet;
+				// anything else is a send that failed on a live stream, worth seeing.
 				sp.Log.Requeue(entries)
+				if !errors.Is(err, errSessionDown) {
+					slog.Warn("lock log flush failed; entries requeued", "lockId", sp.LockID, "entries", len(entries), "error", err)
+				}
 				continue
 			}
 			flushedSinceBeat = true

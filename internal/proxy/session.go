@@ -193,7 +193,9 @@ func (s *session) serveOnce(ctx context.Context) (connected bool, err error) {
 			return true, err
 		}
 		if e := msg.GetLockExpired(); e != nil && s.onExpired != nil {
-			s.onExpired(e.LockId)
+			// Off the Recv loop: closing a scoped port waits for its keepalive
+			// goroutine, which may itself be inside a stalled Send.
+			go s.onExpired(e.LockId)
 		}
 	}
 }

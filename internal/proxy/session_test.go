@@ -279,6 +279,35 @@ func TestSessionDispatchesLockExpired(t *testing.T) {
 	waitFor(t, "expired callback", func() bool { mu.Lock(); defer mu.Unlock(); return len(got) == 1 && got[0] == "lock-9" })
 }
 
+func TestSessionRecvLoopIsNotBlockedByOnExpired(t *testing.T) {
+	f := newFakeSessionServer()
+	client := startFakeOrchestrator(t, f)
+	release := make(chan struct{})
+	var got []string
+	var mu sync.Mutex
+	s := newSession(client, "key-1", "host-a", "v1", 60, func(id string) {
+		mu.Lock()
+		got = append(got, id)
+		mu.Unlock()
+		if id == "slow" {
+			<-release // a callback that blocks (e.g. CloseScopedPort waiting on a stuck send)
+		}
+	}, nil)
+	s.start()
+	defer s.stop()
+	defer close(release)
+	waitFor(t, "connected", s.connected)
+
+	f.push <- &pb.OrchestratorMessage{Msg: &pb.OrchestratorMessage_LockExpired{LockExpired: &pb.LockExpired{LockId: "slow"}}}
+	f.push <- &pb.OrchestratorMessage{Msg: &pb.OrchestratorMessage_LockExpired{LockExpired: &pb.LockExpired{LockId: "next"}}}
+	// The second push must reach its callback while the first callback is still blocked.
+	waitFor(t, "second expiry delivered despite the first callback blocking", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(got) == 2
+	})
+}
+
 // stubEOFStream is a stub grpc.BidiStreamingClient[pb.ProxyMessage,
 // pb.OrchestratorMessage] whose Send reports io.EOF, the way grpc-go does
 // when the server already terminated the stream (e.g. a trailers-only
