@@ -1,11 +1,16 @@
 package proxy
 
 import (
+	"context"
+	"net"
 	"sync"
 	"testing"
 	"time"
 
 	pb "github.com/compscidr/sair/proto/orchestrator"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/test/bufconn"
 )
 
 // newManagerOnSession returns a manager whose router streams to f, with the
@@ -199,6 +204,51 @@ func TestScopedPortBeatDoesNotConsumePendingEntry(t *testing.T) {
 	drained := sp.Log.Drain()
 	if len(drained) != 1 || drained[0].Service != "shell:pending" {
 		t.Errorf("beat must leave the pending entry for the flush, got %+v", drained)
+	}
+}
+
+// TestScopedPortFallbackHeartbeatCarriesLog guards the unary-fallback path:
+// with no stream ever up, the flush ticker can never ship a log (fix #2 makes
+// it skip draining entirely), so the drained entries must ride the unary
+// heartbeat instead of being lost.
+func TestScopedPortFallbackHeartbeatCarriesLog(t *testing.T) {
+	u := &unaryRecorder{fakeSessionServer: *newFakeSessionServer()}
+	u.unimplement = true
+	lis := bufconn.Listen(1 << 20)
+	srv := grpc.NewServer()
+	pb.RegisterOrchestratorServer(srv, u)
+	go srv.Serve(lis)
+	conn, err := grpc.NewClient("passthrough:///bufconn",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
+	)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { conn.Close(); srv.Stop() })
+	r := &CommandRouter{orchClient: pb.NewOrchestratorClient(conn), apiKey: "key-1", proxyID: "host-a"}
+	r.StartSession("v1", 60, nil, nil)
+	t.Cleanup(r.sess.stop)
+	waitFor(t, "fallback", r.sess.unaryFallback)
+
+	m := NewScopedPortManager(r, NewDeviceListTracker(r), 1) // 1s heartbeat
+	sp, err := m.CreateScopedPort("lock-1", map[string]struct{}{"DEV1": {}})
+	if err != nil {
+		t.Fatalf("CreateScopedPort: %v", err)
+	}
+	t.Cleanup(func() { m.CloseScopedPort(sp.LockID) })
+
+	sp.Log.Record(&pb.LockLogEntry{Service: "shell:fallback-entry"})
+	waitFor(t, "heartbeat carries log", func() bool { return u.getLastBeat() != nil })
+
+	beat := u.getLastBeat()
+	if len(beat.Log) != 1 || beat.Log[0].Service != "shell:fallback-entry" {
+		t.Errorf("fallback heartbeat did not carry the drained log: %+v", beat)
+	}
+	// No stream ever exists in fallback, so LockLog can never be sent; the
+	// only Session() call is the single initial attempt that got Unimplemented.
+	if n := u.attemptCount(); n != 1 {
+		t.Errorf("fallback must not attempt the stream again; saw %d Session() attempts", n)
 	}
 }
 

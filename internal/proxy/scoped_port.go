@@ -236,6 +236,13 @@ func (m *ScopedPortManager) runKeepalive(sp *ScopedPort) {
 	for {
 		select {
 		case <-flush.C:
+			if !m.commandRouter.sessionUp() {
+				// No stream to send on (reconnecting, or unary fallback):
+				// draining here would only clear the truncation flag and
+				// requeue, so a job that ever hit the cap grows a fresh
+				// "truncated" marker on every tick until the stream is back.
+				continue
+			}
 			entries := sp.Log.Drain()
 			if len(entries) == 0 {
 				continue

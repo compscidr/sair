@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"sync"
 	"time"
@@ -136,8 +137,14 @@ func (s *session) run(ctx context.Context) {
 // the stream fails. Returns whether it ever reached welcome (so run can
 // reset its backoff) and the error that ended it.
 func (s *session) serveOnce(ctx context.Context) (connected bool, err error) {
+	// Per-attempt context: if this attempt returns before the stream is
+	// handed off to run() (e.g. no welcome), cancel aborts it here instead of
+	// leaving it open on the long-lived ctx for the rest of the process.
+	actx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	md := metadata.Pairs("x-api-key", s.apiKey)
-	stream, err := s.client.Session(metadata.NewOutgoingContext(ctx, md))
+	stream, err := s.client.Session(metadata.NewOutgoingContext(actx, md))
 	if err != nil {
 		return false, err
 	}
@@ -145,6 +152,17 @@ func (s *session) serveOnce(ctx context.Context) (connected bool, err error) {
 		Version: s.version, ProxyId: s.proxyID, DeviceReportIntervalS: 10, LockHeartbeatIntervalS: s.heartbeatIntervalS,
 	}}}
 	if err := stream.Send(hello); err != nil {
+		// grpc-go's SendMsg contract: if the server already terminated the
+		// stream (e.g. a trailers-only Unimplemented), Send may return io.EOF
+		// before the real status is available — only Recv surfaces it. Fall
+		// through to Recv so the status code (and the Unimplemented fallback
+		// decision in run()) isn't lost to a race on which side observes the
+		// termination first.
+		if errors.Is(err, io.EOF) {
+			if _, recvErr := stream.Recv(); recvErr != nil {
+				return false, recvErr
+			}
+		}
 		return false, err
 	}
 	first, err := stream.Recv()

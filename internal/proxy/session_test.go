@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"io"
 	"net"
 	"sync"
 	"testing"
@@ -278,6 +279,44 @@ func TestSessionDispatchesLockExpired(t *testing.T) {
 	waitFor(t, "expired callback", func() bool { mu.Lock(); defer mu.Unlock(); return len(got) == 1 && got[0] == "lock-9" })
 }
 
+// stubEOFStream is a stub grpc.BidiStreamingClient[pb.ProxyMessage,
+// pb.OrchestratorMessage] whose Send reports io.EOF, the way grpc-go does
+// when the server already terminated the stream (e.g. a trailers-only
+// Unimplemented) before Send ran: the real status is only available from
+// Recv. Used to exercise serveOnce's EOF-then-Recv fallback deterministically,
+// without racing a real server's trailers against a real client's Send.
+type stubEOFStream struct {
+	grpc.ClientStream
+}
+
+func (stubEOFStream) Send(*pb.ProxyMessage) error { return io.EOF }
+func (stubEOFStream) Recv() (*pb.OrchestratorMessage, error) {
+	return nil, status.Error(codes.Unimplemented, "x")
+}
+
+// stubEOFClient is a stub pb.OrchestratorClient whose Session returns
+// stubEOFStream. serveOnce never calls the other OrchestratorClient methods,
+// so they are left unimplemented (nil embedded interface).
+type stubEOFClient struct {
+	pb.OrchestratorClient
+}
+
+func (stubEOFClient) Session(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[pb.ProxyMessage, pb.OrchestratorMessage], error) {
+	return stubEOFStream{}, nil
+}
+
+func TestSessionFallbackWhenHelloSendSeesEOF(t *testing.T) {
+	s := newSession(stubEOFClient{}, "key-1", "host-a", "v1", 60, nil, nil)
+
+	if _, err := s.serveOnce(context.Background()); status.Code(err) != codes.Unimplemented {
+		t.Fatalf("serveOnce error = %v, want status code Unimplemented", err)
+	}
+
+	s.start()
+	defer s.stop()
+	waitFor(t, "fallback flag set after EOF-then-Recv", s.unaryFallback)
+}
+
 func TestSessionSendReturnsErrorWhenDown(t *testing.T) {
 	f := newFakeSessionServer()
 	client := startFakeOrchestrator(t, f)
@@ -367,9 +406,10 @@ func TestRouterHeartbeatOnStreamHandsEntriesBack(t *testing.T) {
 // answers the unary calls and refuses the stream.
 type unaryRecorder struct {
 	fakeSessionServer
-	mu      sync.Mutex
-	reports int
-	beats   int
+	mu       sync.Mutex
+	reports  int
+	beats    int
+	lastBeat *pb.LockHeartbeatRequest
 }
 
 func (u *unaryRecorder) ReportDevices(ctx context.Context, in *pb.ReportDevicesRequest) (*pb.ReportDevicesResponse, error) {
@@ -382,8 +422,15 @@ func (u *unaryRecorder) ReportDevices(ctx context.Context, in *pb.ReportDevicesR
 func (u *unaryRecorder) LockHeartbeat(ctx context.Context, in *pb.LockHeartbeatRequest) (*pb.LockHeartbeatResponse, error) {
 	u.mu.Lock()
 	u.beats++
+	u.lastBeat = in
 	u.mu.Unlock()
 	return &pb.LockHeartbeatResponse{Alive: true}, nil
+}
+
+func (u *unaryRecorder) getLastBeat() *pb.LockHeartbeatRequest {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.lastBeat
 }
 
 func TestRouterUsesUnaryInFallbackMode(t *testing.T) {
