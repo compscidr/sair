@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -30,6 +31,12 @@ type CommandRouter struct {
 	orchConn   *grpc.ClientConn
 	orchClient pb.OrchestratorClient
 	apiKey     string
+	proxyID    string
+	sess       *session
+
+	// beforeSendLockLog, when set, runs at the top of SendLockLog. Test-only
+	// hook used to pin a send mid-flight and exercise races deterministically.
+	beforeSendLockLog func()
 
 	// Device-source connections, created lazily when sources register
 	dsMu    sync.Mutex
@@ -45,6 +52,11 @@ func NewCommandRouter(orchestratorAddr, apiKey string, orchestratorTLS bool) (*C
 	} else {
 		orchOpts = append(orchOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
+	orchOpts = append(orchOpts, grpc.WithKeepaliveParams(keepalive.ClientParameters{
+		Time:                30 * time.Second,
+		Timeout:             10 * time.Second,
+		PermitWithoutStream: true,
+	}))
 
 	orchConn, err := grpc.NewClient(orchestratorAddr, orchOpts...)
 	if err != nil {
@@ -55,6 +67,7 @@ func NewCommandRouter(orchestratorAddr, apiKey string, orchestratorTLS bool) (*C
 		orchConn:   orchConn,
 		orchClient: pb.NewOrchestratorClient(orchConn),
 		apiKey:     apiKey,
+		proxyID:    ProxyID(),
 		dsConns:    make(map[string]*grpc.ClientConn),
 		dsClients:  make(map[string]dspb.DeviceSourceClient),
 	}, nil
@@ -203,7 +216,17 @@ func (r *CommandRouter) ListDevices() (*pb.DeviceList, error) {
 	return r.orchClient.ListDevices(r.ctx(), &pb.ListDevicesRequest{})
 }
 
+// ReportDevices sends the full device list: on the session when it is open,
+// unary when the orchestrator predates sessions, and silently dropped while a
+// reconnect is in progress (the reconnect resends the list).
 func (r *CommandRouter) ReportDevices(devices []*pb.DeviceInfo) error {
+	if r.sessionUp() {
+		return r.sess.send(&pb.ProxyMessage{Msg: &pb.ProxyMessage_Devices{Devices: &pb.ReportDevicesRequest{Devices: devices}}})
+	}
+	if r.sess != nil && !r.sess.unaryFallback() {
+		slog.Debug("session reconnecting; device report skipped")
+		return nil
+	}
 	ctx, cancel := r.ctxWithTimeout(10 * time.Second)
 	defer cancel()
 	_, err := r.orchClient.ReportDevices(ctx, &pb.ReportDevicesRequest{Devices: devices})
@@ -226,7 +249,7 @@ func (r *CommandRouter) AcquireLock(serials map[string]struct{}, count int32, de
 	ctx, cancel := r.ctxWithTimeout(time.Duration(deadlineMinutes) * time.Minute)
 	defer cancel()
 
-	req := &pb.AcquireLockRequest{Repo: repo, Count: count, RunUrl: runURL}
+	req := &pb.AcquireLockRequest{Repo: repo, Count: count, RunUrl: runURL, ProxyId: r.proxyID}
 	for s := range serials {
 		req.Serials = append(req.Serials, s)
 	}
@@ -255,19 +278,61 @@ func (r *CommandRouter) ReleaseLock(lockID, status string, log []*pb.LockLogEntr
 	return resp.Released, nil
 }
 
-// LockHeartbeat keeps the lock alive and ships the log entries recorded since
-// the previous heartbeat.
-func (r *CommandRouter) LockHeartbeat(lockID string, log []*pb.LockLogEntry) (bool, error) {
+// LockHeartbeat keeps the lock alive with exactly one send per call — no
+// two-step path that could ship a log and then fail to report it (or vice
+// versa report success without the heartbeat landing). On the stream it
+// sends only the heartbeat and never touches log: unsent is handed back
+// unchanged (whether the send succeeded or not), leaving it entirely to the
+// caller to requeue or ship on the next flush. Unary carries log atomically
+// in the same request as the heartbeat: unsent is nil on success (delivered)
+// or log unchanged on failure. Returns errSessionDown while a reconnect is
+// in progress, with unsent == log.
+func (r *CommandRouter) LockHeartbeat(lockID string, log []*pb.LockLogEntry) (alive bool, unsent []*pb.LockLogEntry, err error) {
+	if r.sessionUp() {
+		err := r.sess.send(&pb.ProxyMessage{Msg: &pb.ProxyMessage_Heartbeat{Heartbeat: &pb.LockHeartbeatRequest{LockId: lockID}}})
+		return err == nil, log, err
+	}
+	if r.sess != nil && !r.sess.unaryFallback() {
+		return false, log, errSessionDown
+	}
 	ctx, cancel := r.ctxWithTimeout(30 * time.Second)
 	defer cancel()
 	resp, err := r.orchClient.LockHeartbeat(ctx, &pb.LockHeartbeatRequest{LockId: lockID, Log: log})
 	if err != nil {
-		return false, err
+		return false, log, err
 	}
-	return resp.Alive, nil
+	return resp.Alive, nil, nil
+}
+
+// SendLockLog ships log entries on the session. errSessionDown when there is
+// no stream, including unary fallback, where entries ride the heartbeat instead.
+func (r *CommandRouter) SendLockLog(lockID string, entries []*pb.LockLogEntry) error {
+	if r.beforeSendLockLog != nil {
+		r.beforeSendLockLog()
+	}
+	if !r.sessionUp() {
+		return errSessionDown
+	}
+	return r.sess.send(&pb.ProxyMessage{Msg: &pb.ProxyMessage_LockLog{LockLog: &pb.LockLog{LockId: lockID, Entries: entries}}})
+}
+
+// StartSession opens the long-lived stream to the orchestrator. onExpired is
+// called when the orchestrator reports a lock gone; onConnected after every
+// (re)connect so the caller can resend the device list.
+func (r *CommandRouter) StartSession(version string, heartbeatIntervalS int64, onExpired func(lockID string), onConnected func()) {
+	r.sess = newSession(r.orchClient, r.apiKey, r.proxyID, version, heartbeatIntervalS, onExpired, onConnected)
+	r.sess.start()
+}
+
+// sessionUp reports whether periodic traffic should go on the stream.
+func (r *CommandRouter) sessionUp() bool {
+	return r.sess != nil && r.sess.connected()
 }
 
 func (r *CommandRouter) Shutdown() {
+	if r.sess != nil {
+		r.sess.stop()
+	}
 	if err := r.orchConn.Close(); err != nil {
 		slog.Error("failed to close orchestrator connection", "error", err)
 	}

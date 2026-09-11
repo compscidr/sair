@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	pb "github.com/compscidr/sair/proto/orchestrator"
@@ -113,5 +114,28 @@ func TestAcquireLockRejectsInvalidCount(t *testing.T) {
 				t.Error("invalid request was sent to the orchestrator")
 			}
 		})
+	}
+}
+
+func TestAcquireLockCarriesProxyID(t *testing.T) {
+	fake := &fakeOrchClient{resp: &pb.AcquireLockResponse{LockId: "lock-1"}}
+	router := &CommandRouter{orchClient: fake, apiKey: "test-key", proxyID: "host-a"}
+	if _, err := router.AcquireLock(nil, 1, 30, "", ""); err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+	if got := fake.lastAcquire.GetProxyId(); got != "host-a" {
+		t.Errorf("proxy_id not sent, got %q", got)
+	}
+}
+
+func TestProxyIDPrefersEnvThenHostname(t *testing.T) {
+	t.Setenv("PROXY_ID", " lab-box ")
+	if got := ProxyID(); got != "lab-box" {
+		t.Errorf("env override not used (trimmed), got %q", got)
+	}
+	t.Setenv("PROXY_ID", "")
+	host, _ := os.Hostname()
+	if got := ProxyID(); got != host || got == "" {
+		t.Errorf("hostname fallback wrong, got %q want %q", got, host)
 	}
 }

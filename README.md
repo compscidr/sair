@@ -129,6 +129,7 @@ grpcurl -plaintext localhost:8080 devicesource.DeviceSource/GetDevices
 | `PROXY_HTTP_PORT` | `8550` | HTTP API listen port |
 | `PROXY_HTTP_HOST` | `0.0.0.0` | HTTP API bind address |
 | `HEARTBEAT_INTERVAL_SECONDS` | `60` | Lock heartbeat interval |
+| `PROXY_ID` | hostname | Identifies this proxy within the account so several machines can share one API key. Locks are granted only on devices this proxy reported. |
 
 The proxy exposes two ports:
 
@@ -136,6 +137,8 @@ The proxy exposes two ports:
   until a lock is acquired
 - **8550** (HTTP API) — `sair-acquire` and `sair-release` call this to manage
   locks
+
+The proxy keeps one long-lived stream open to the orchestrator carrying its version, device reports, lock heartbeats and the ADB log of running jobs (flushed within a second). Against an orchestrator that predates the stream it falls back to the periodic unary calls automatically.
 
 ### Tools
 
