@@ -37,6 +37,11 @@ type session struct {
 	fallback bool
 	cancel   context.CancelFunc
 	done     chan struct{}
+
+	// sendMu serialises calls to stream.Send, independent of mu. A blocked
+	// Send (e.g. flow-control window exhausted) must never hold mu, or
+	// stop()/connected()/unaryFallback() would stall behind it.
+	sendMu sync.Mutex
 }
 
 func newSession(client pb.OrchestratorClient, apiKey, proxyID, version string, heartbeatIntervalS int64, onExpired func(string), onConnected func()) *session {
@@ -78,25 +83,27 @@ func (s *session) unaryFallback() bool {
 	return s.fallback
 }
 
-// send writes one message on the current stream. Sends are serialised by the
-// mutex because gRPC streams allow only one concurrent Send.
+// send writes one message on the current stream. sendMu serialises the
+// actual Send call, because gRPC streams allow only one concurrent Send; mu
+// is only held long enough to snapshot the stream, so a Send blocked on
+// flow control never blocks stop(), connected() or unaryFallback().
 func (s *session) send(msg *pb.ProxyMessage) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.stream == nil {
+	stream := s.stream
+	s.mu.Unlock()
+	if stream == nil {
 		return errSessionDown
 	}
-	if err := s.stream.Send(msg); err != nil {
-		return err
-	}
-	return nil
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+	return stream.Send(msg)
 }
 
 func (s *session) run(ctx context.Context) {
 	defer close(s.done)
 	backoff := s.backoffMin
 	for {
-		err := s.serveOnce(ctx)
+		connected, err := s.serveOnce(ctx)
 		if ctx.Err() != nil {
 			return
 		}
@@ -106,6 +113,11 @@ func (s *session) run(ctx context.Context) {
 			s.mu.Unlock()
 			slog.Warn("orchestrator has no Session stream; using unary heartbeats and reports", "error", err)
 			return
+		}
+		// A session that reached welcome was healthy; reconnect promptly
+		// instead of paying whatever backoff had grown to before it dropped.
+		if connected {
+			backoff = s.backoffMin
 		}
 		slog.Warn("orchestrator session ended; reconnecting", "error", err, "in", backoff)
 		select {
@@ -121,28 +133,29 @@ func (s *session) run(ctx context.Context) {
 }
 
 // serveOnce opens a stream, sends hello, waits for welcome, then reads until
-// the stream fails. Returns the error that ended it.
-func (s *session) serveOnce(ctx context.Context) error {
+// the stream fails. Returns whether it ever reached welcome (so run can
+// reset its backoff) and the error that ended it.
+func (s *session) serveOnce(ctx context.Context) (connected bool, err error) {
 	md := metadata.Pairs("x-api-key", s.apiKey)
 	stream, err := s.client.Session(metadata.NewOutgoingContext(ctx, md))
 	if err != nil {
-		return err
+		return false, err
 	}
 	hello := &pb.ProxyMessage{Msg: &pb.ProxyMessage_Hello{Hello: &pb.ProxyHello{
 		Version: s.version, ProxyId: s.proxyID, DeviceReportIntervalS: 10, LockHeartbeatIntervalS: s.heartbeatIntervalS,
 	}}}
 	if err := stream.Send(hello); err != nil {
-		return err
+		return false, err
 	}
 	first, err := stream.Recv()
 	if err != nil {
-		return err
+		return false, err
 	}
-	if w := first.GetWelcome(); w == nil {
-		return errors.New("orchestrator did not answer hello with welcome")
-	} else {
-		slog.Info("orchestrator session open", "tenant", w.TenantId, "orchestrator", w.Version, "proxyId", s.proxyID)
+	w := first.GetWelcome()
+	if w == nil {
+		return false, errors.New("orchestrator did not answer hello with welcome")
 	}
+	slog.Info("orchestrator session open", "tenant", w.TenantId, "orchestrator", w.Version, "proxyId", s.proxyID)
 
 	s.mu.Lock()
 	s.stream = stream
@@ -159,7 +172,7 @@ func (s *session) serveOnce(ctx context.Context) error {
 	for {
 		msg, err := stream.Recv()
 		if err != nil {
-			return err
+			return true, err
 		}
 		if e := msg.GetLockExpired(); e != nil && s.onExpired != nil {
 			s.onExpired(e.LockId)

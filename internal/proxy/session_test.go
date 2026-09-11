@@ -40,6 +40,7 @@ type fakeSessionServer struct {
 	received    []*pb.ProxyMessage
 	apiKeys     []string
 	streams     int
+	attempts    int // incremented on every Session() call, even one refused as Unimplemented
 	unimplement bool
 	push        chan *pb.OrchestratorMessage
 	kill        chan struct{}
@@ -50,6 +51,9 @@ func newFakeSessionServer() *fakeSessionServer {
 }
 
 func (f *fakeSessionServer) Session(stream grpc.BidiStreamingServer[pb.ProxyMessage, pb.OrchestratorMessage]) error {
+	f.mu.Lock()
+	f.attempts++
+	f.mu.Unlock()
 	if f.unimplement {
 		return status.Error(codes.Unimplemented, "no Session here")
 	}
@@ -98,6 +102,12 @@ func (f *fakeSessionServer) snapshot() (msgs []*pb.ProxyMessage, streams int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]*pb.ProxyMessage(nil), f.received...), f.streams
+}
+
+func (f *fakeSessionServer) attemptCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.attempts
 }
 
 // startFakeOrchestrator serves the fake over bufconn and returns a client to it.
@@ -196,8 +206,32 @@ func TestSessionFallsBackToUnaryOnUnimplemented(t *testing.T) {
 		t.Errorf("send while down should report errSessionDown, got %v", err)
 	}
 	time.Sleep(50 * time.Millisecond)
-	if _, n := f.snapshot(); n != 0 {
-		t.Errorf("fallback must stop reconnecting; saw %d accepted streams", n)
+	if n := f.attemptCount(); n != 1 {
+		t.Errorf("fallback must stop reconnecting; saw %d Session() attempts", n)
+	}
+}
+
+// TestSessionBackoffResetsAfterGoodConnection guards against the backoff
+// growing forever once a session has been healthy: a session that reached
+// welcome and later dropped should reconnect near backoffMin, not near
+// whatever the backoff had grown to.
+func TestSessionBackoffResetsAfterGoodConnection(t *testing.T) {
+	f := newFakeSessionServer()
+	client := startFakeOrchestrator(t, f)
+	s := newSession(client, "key-1", "host-a", "v1", 60, nil, nil)
+	s.backoffMin, s.backoffMax = 10*time.Millisecond, 200*time.Millisecond
+	s.start()
+	defer s.stop()
+
+	waitFor(t, "first stream", func() bool { _, n := f.snapshot(); return n == 1 })
+	f.kill <- struct{}{}
+	waitFor(t, "second stream", func() bool { _, n := f.snapshot(); return n == 2 })
+
+	start := time.Now()
+	f.kill <- struct{}{}
+	waitFor(t, "third stream", func() bool { _, n := f.snapshot(); return n == 3 })
+	if elapsed := time.Since(start); elapsed > 150*time.Millisecond {
+		t.Errorf("reconnect after a healthy session took %v; backoff should have reset near backoffMin", elapsed)
 	}
 }
 
