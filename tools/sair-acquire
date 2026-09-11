@@ -143,8 +143,21 @@ HTTP_STATUS=$(printf '%s\n' "$RESPONSE" | tail -n1)
 BODY=$(printf '%s\n' "$RESPONSE" | sed '$d')
 
 if [[ "$HTTP_STATUS" -lt 200 || "$HTTP_STATUS" -ge 300 ]]; then
-    echo "sair-acquire: ERROR: failed to acquire lock (HTTP ${HTTP_STATUS})" >&2
-    echo "sair-acquire: response: ${BODY:-<empty>}" >&2
+    # The proxy answers {"error":"..."}; show the reason itself, not the JSON.
+    MSG=$(printf '%s' "$BODY" | sed -n 's/.*"error":"\([^"]*\)".*/\1/p')
+    [[ -z "$MSG" ]] && MSG="${BODY:-<empty>}"
+    if [[ "$HTTP_STATUS" == "429" ]]; then
+        HEADLINE="plan limit reached"
+    else
+        HEADLINE="failed to acquire lock (HTTP ${HTTP_STATUS})"
+    fi
+    echo "sair-acquire: ERROR: ${HEADLINE}" >&2
+    echo "sair-acquire: ${MSG}" >&2
+    # On GitHub Actions also raise an annotation so the reason shows on the
+    # job summary. stderr, because callers often send stdout to /dev/null.
+    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+        echo "::error title=sair-acquire: ${HEADLINE}::${MSG}" >&2
+    fi
     exit 1
 fi
 

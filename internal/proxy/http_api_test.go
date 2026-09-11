@@ -2,9 +2,13 @@ package proxy
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestHTTPApiAuthRequired(t *testing.T) {
@@ -115,5 +119,29 @@ func TestHTTPApiReleaseMissingLockID(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp["error"] != "lock_id parameter required" {
 		t.Errorf("got error %q, want %q", resp["error"], "lock_id parameter required")
+	}
+}
+
+func TestHTTPStatusForAcquireError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantCode int
+		wantMsg  string
+	}{
+		{"quota", status.Error(codes.ResourceExhausted, "Daily job limit reached: 10 of 10 jobs used today"), http.StatusTooManyRequests, "Daily job limit reached: 10 of 10 jobs used today"},
+		{"bad request", status.Error(codes.InvalidArgument, "count and serials are mutually exclusive"), http.StatusBadRequest, "count and serials are mutually exclusive"},
+		{"forbidden", status.Error(codes.PermissionDenied, "nope"), http.StatusForbidden, "nope"},
+		{"timeout", status.Error(codes.DeadlineExceeded, "deadline"), http.StatusGatewayTimeout, "deadline"},
+		{"other grpc", status.Error(codes.Unavailable, "lock manager not configured"), http.StatusInternalServerError, "lock manager not configured"},
+		{"plain error", errors.New("boom"), http.StatusInternalServerError, "boom"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, msg := httpStatusForAcquireError(tt.err)
+			if code != tt.wantCode || msg != tt.wantMsg {
+				t.Errorf("got (%d, %q), want (%d, %q)", code, msg, tt.wantCode, tt.wantMsg)
+			}
+		})
 	}
 }

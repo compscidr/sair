@@ -12,6 +12,8 @@ import (
 	"time"
 
 	pb "github.com/compscidr/sair/proto/orchestrator"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // HTTPApi provides the HTTP API for the ADB proxy.
@@ -117,8 +119,9 @@ func (a *HTTPApi) handleAcquire(w http.ResponseWriter, r *http.Request) {
 	runURL := r.URL.Query().Get("run_url")
 	sp, err := a.scopedPortManager.Acquire(requestedSerials, int32(count), repo, runURL)
 	if err != nil {
-		slog.Error("failed to acquire", "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		code, msg := httpStatusForAcquireError(err)
+		slog.Error("failed to acquire", "error", msg, "status", code)
+		writeJSON(w, code, map[string]string{"error": msg})
 		return
 	}
 
@@ -132,6 +135,28 @@ func (a *HTTPApi) handleAcquire(w http.ResponseWriter, r *http.Request) {
 		"serials": serials,
 		"port":    sp.Port,
 	})
+}
+
+// httpStatusForAcquireError maps an orchestrator error to an HTTP status and
+// a message without the "rpc error: code = ... desc = ..." wrapping, so
+// sair-acquire can show the reason (e.g. a plan limit) to the user verbatim.
+func httpStatusForAcquireError(err error) (int, string) {
+	st, ok := status.FromError(err)
+	if !ok {
+		return http.StatusInternalServerError, err.Error()
+	}
+	switch st.Code() {
+	case codes.ResourceExhausted:
+		return http.StatusTooManyRequests, st.Message()
+	case codes.InvalidArgument:
+		return http.StatusBadRequest, st.Message()
+	case codes.PermissionDenied, codes.Unauthenticated:
+		return http.StatusForbidden, st.Message()
+	case codes.DeadlineExceeded:
+		return http.StatusGatewayTimeout, st.Message()
+	default:
+		return http.StatusInternalServerError, st.Message()
+	}
 }
 
 func (a *HTTPApi) handleRelease(w http.ResponseWriter, r *http.Request) {
