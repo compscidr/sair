@@ -49,3 +49,16 @@ jobs:
         run: |
           docker build --target device-source -t sair-device-source:test .
           docker build --target proxy -t sair-proxy:test .
+
+  # The root action.yml is what users pin with `uses: compscidr/sair@vX.Y.Z`.
+  setup-action:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./
+
+      - name: Tools are on PATH
+        run: |
+          command -v sair-acquire
+          command -v sair-release

@@ -286,12 +286,9 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      # Fetch the SAIR tools
-      - uses: actions/checkout@v4
-        with:
-          repository: compscidr/sair
-          path: sair
-          sparse-checkout: tools
+      # Puts sair-acquire and sair-release on PATH, pinned to this release.
+      # Bump the tag to upgrade; the release notes list breaking changes.
+      - uses: compscidr/sair@v0.0.21
 
       - name: Acquire device
         env:
@@ -299,7 +296,7 @@ jobs:
           SAIR_API_KEY: ${{ secrets.SAIR_API_KEY }}
         run: |
           # Also appends every variable to $GITHUB_ENV for the later steps
-          sair/tools/sair-acquire --count 1 > /dev/null
+          sair-acquire --count 1 > /dev/null
 
       - name: Run connected tests
         run: ./gradlew connectedCheck
@@ -308,7 +305,7 @@ jobs:
         if: always()
         env:
           SAIR_API_KEY: ${{ secrets.SAIR_API_KEY }}
-        run: sair/tools/sair-release --status ${{ job.status }}
+        run: sair-release --status ${{ job.status }}
 ```
 
 Key points about the workflow:

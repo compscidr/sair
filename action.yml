@@ -1,0 +1,12 @@
+name: Setup SAIR tools
+description: >-
+  Put sair-acquire and sair-release on PATH, pinned to the release tag this
+  action is used at (uses: compscidr/sair@vX.Y.Z).
+branding:
+  icon: smartphone
+  color: green
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: echo "${GITHUB_ACTION_PATH}/tools" >> "$GITHUB_PATH"
