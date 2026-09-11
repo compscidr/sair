@@ -272,3 +272,118 @@ func TestSessionSendReturnsErrorWhenDown(t *testing.T) {
 	}
 	_ = client
 }
+
+func newRouterWithSession(t *testing.T, f *fakeSessionServer) *CommandRouter {
+	t.Helper()
+	client := startFakeOrchestrator(t, f)
+	r := &CommandRouter{orchClient: client, apiKey: "key-1", proxyID: "host-a"}
+	r.StartSession("v1", 60, nil, nil)
+	t.Cleanup(r.sess.stop)
+	if !f.unimplement {
+		waitFor(t, "connected", r.sess.connected)
+	} else {
+		waitFor(t, "fallback", r.sess.unaryFallback)
+	}
+	return r
+}
+
+func TestRouterSendsReportsAndHeartbeatsOnStream(t *testing.T) {
+	f := newFakeSessionServer()
+	r := newRouterWithSession(t, f)
+
+	if err := r.ReportDevices([]*pb.DeviceInfo{{Serial: "DEV1"}}); err != nil {
+		t.Fatalf("ReportDevices: %v", err)
+	}
+	alive, err := r.LockHeartbeat("lock-1", nil)
+	if err != nil || !alive {
+		t.Fatalf("LockHeartbeat on stream: alive=%v err=%v", alive, err)
+	}
+	if err := r.SendLockLog("lock-1", []*pb.LockLogEntry{{Service: "shell:ls"}}); err != nil {
+		t.Fatalf("SendLockLog: %v", err)
+	}
+	waitFor(t, "three messages after hello", func() bool { msgs, _ := f.snapshot(); return len(msgs) == 4 })
+	msgs, _ := f.snapshot()
+	if msgs[1].GetDevices() == nil || msgs[1].GetDevices().Devices[0].Serial != "DEV1" {
+		t.Errorf("devices not on stream: %+v", msgs[1])
+	}
+	if msgs[2].GetHeartbeat() == nil || msgs[2].GetHeartbeat().LockId != "lock-1" || len(msgs[2].GetHeartbeat().Log) != 0 {
+		t.Errorf("heartbeat not on stream or carries a log: %+v", msgs[2])
+	}
+	if l := msgs[3].GetLockLog(); l == nil || l.LockId != "lock-1" || l.Entries[0].Service != "shell:ls" {
+		t.Errorf("lock log not on stream: %+v", msgs[3])
+	}
+}
+
+// unaryRecorder is the fake used when the orchestrator predates Session: it
+// answers the unary calls and refuses the stream.
+type unaryRecorder struct {
+	fakeSessionServer
+	mu      sync.Mutex
+	reports int
+	beats   int
+}
+
+func (u *unaryRecorder) ReportDevices(ctx context.Context, in *pb.ReportDevicesRequest) (*pb.ReportDevicesResponse, error) {
+	u.mu.Lock()
+	u.reports++
+	u.mu.Unlock()
+	return &pb.ReportDevicesResponse{}, nil
+}
+
+func (u *unaryRecorder) LockHeartbeat(ctx context.Context, in *pb.LockHeartbeatRequest) (*pb.LockHeartbeatResponse, error) {
+	u.mu.Lock()
+	u.beats++
+	u.mu.Unlock()
+	return &pb.LockHeartbeatResponse{Alive: true}, nil
+}
+
+func TestRouterUsesUnaryInFallbackMode(t *testing.T) {
+	u := &unaryRecorder{fakeSessionServer: *newFakeSessionServer()}
+	u.unimplement = true
+	lis := bufconn.Listen(1 << 20)
+	srv := grpc.NewServer()
+	pb.RegisterOrchestratorServer(srv, u)
+	go srv.Serve(lis)
+	conn, err := grpc.NewClient("passthrough:///bufconn",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
+	)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { conn.Close(); srv.Stop() })
+	r := &CommandRouter{orchClient: pb.NewOrchestratorClient(conn), apiKey: "key-1", proxyID: "host-a"}
+	r.StartSession("v1", 60, nil, nil)
+	t.Cleanup(r.sess.stop)
+	waitFor(t, "fallback", r.sess.unaryFallback)
+
+	if err := r.ReportDevices(nil); err != nil {
+		t.Fatalf("unary ReportDevices: %v", err)
+	}
+	if alive, err := r.LockHeartbeat("lock-1", nil); err != nil || !alive {
+		t.Fatalf("unary LockHeartbeat: alive=%v err=%v", alive, err)
+	}
+	if err := r.SendLockLog("lock-1", nil); err != errSessionDown {
+		t.Errorf("SendLockLog in fallback should be errSessionDown (logs ride the unary heartbeat), got %v", err)
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.reports != 1 || u.beats != 1 {
+		t.Errorf("unary calls not made: reports=%d beats=%d", u.reports, u.beats)
+	}
+}
+
+func TestRouterDropsReportAndHoldsHeartbeatWhileReconnecting(t *testing.T) {
+	f := newFakeSessionServer()
+	r := newRouterWithSession(t, f)
+	r.sess.backoffMin, r.sess.backoffMax = 200*time.Millisecond, 200*time.Millisecond
+	f.kill <- struct{}{}
+	waitFor(t, "stream down", func() bool { return !r.sess.connected() })
+
+	if err := r.ReportDevices(nil); err != nil {
+		t.Errorf("a report while reconnecting is dropped silently, got %v", err)
+	}
+	if _, err := r.LockHeartbeat("lock-1", nil); err != errSessionDown {
+		t.Errorf("a heartbeat while reconnecting must say the session is down, got %v", err)
+	}
+}

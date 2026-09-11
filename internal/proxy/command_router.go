@@ -212,7 +212,17 @@ func (r *CommandRouter) ListDevices() (*pb.DeviceList, error) {
 	return r.orchClient.ListDevices(r.ctx(), &pb.ListDevicesRequest{})
 }
 
+// ReportDevices sends the full device list: on the session when it is open,
+// unary when the orchestrator predates sessions, and silently dropped while a
+// reconnect is in progress (the reconnect resends the list).
 func (r *CommandRouter) ReportDevices(devices []*pb.DeviceInfo) error {
+	if r.sessionUp() {
+		return r.sess.send(&pb.ProxyMessage{Msg: &pb.ProxyMessage_Devices{Devices: &pb.ReportDevicesRequest{Devices: devices}}})
+	}
+	if r.sess != nil && !r.sess.unaryFallback() {
+		slog.Debug("session reconnecting; device report skipped")
+		return nil
+	}
 	ctx, cancel := r.ctxWithTimeout(10 * time.Second)
 	defer cancel()
 	_, err := r.orchClient.ReportDevices(ctx, &pb.ReportDevicesRequest{Devices: devices})
@@ -264,9 +274,18 @@ func (r *CommandRouter) ReleaseLock(lockID, status string, log []*pb.LockLogEntr
 	return resp.Released, nil
 }
 
-// LockHeartbeat keeps the lock alive and ships the log entries recorded since
-// the previous heartbeat.
+// LockHeartbeat keeps the lock alive. On the session it carries no log (use
+// SendLockLog); unary it ships the entries recorded since the previous call.
+// Returns errSessionDown while a reconnect is in progress so the caller keeps
+// its entries.
 func (r *CommandRouter) LockHeartbeat(lockID string, log []*pb.LockLogEntry) (bool, error) {
+	if r.sessionUp() {
+		err := r.sess.send(&pb.ProxyMessage{Msg: &pb.ProxyMessage_Heartbeat{Heartbeat: &pb.LockHeartbeatRequest{LockId: lockID}}})
+		return err == nil, err
+	}
+	if r.sess != nil && !r.sess.unaryFallback() {
+		return false, errSessionDown
+	}
 	ctx, cancel := r.ctxWithTimeout(30 * time.Second)
 	defer cancel()
 	resp, err := r.orchClient.LockHeartbeat(ctx, &pb.LockHeartbeatRequest{LockId: lockID, Log: log})
@@ -274,6 +293,15 @@ func (r *CommandRouter) LockHeartbeat(lockID string, log []*pb.LockLogEntry) (bo
 		return false, err
 	}
 	return resp.Alive, nil
+}
+
+// SendLockLog ships log entries on the session. errSessionDown when there is
+// no stream, including unary fallback, where entries ride the heartbeat instead.
+func (r *CommandRouter) SendLockLog(lockID string, entries []*pb.LockLogEntry) error {
+	if !r.sessionUp() {
+		return errSessionDown
+	}
+	return r.sess.send(&pb.ProxyMessage{Msg: &pb.ProxyMessage_LockLog{LockLog: &pb.LockLog{LockId: lockID, Entries: entries}}})
 }
 
 // StartSession opens the long-lived stream to the orchestrator. onExpired is
