@@ -274,12 +274,19 @@ func (r *CommandRouter) ReleaseLock(lockID, status string, log []*pb.LockLogEntr
 	return resp.Released, nil
 }
 
-// LockHeartbeat keeps the lock alive. On the session it carries no log (use
-// SendLockLog); unary it ships the entries recorded since the previous call.
-// Returns errSessionDown while a reconnect is in progress so the caller keeps
-// its entries.
+// LockHeartbeat keeps the lock alive. On the session, any log entries are
+// shipped as a LockLog message ahead of the heartbeat (a send failure there
+// is returned so the caller requeues instead of losing them); unary it ships
+// the entries recorded since the previous call as part of the heartbeat
+// request. Returns errSessionDown while a reconnect is in progress so the
+// caller keeps its entries.
 func (r *CommandRouter) LockHeartbeat(lockID string, log []*pb.LockLogEntry) (bool, error) {
 	if r.sessionUp() {
+		if len(log) > 0 {
+			if err := r.SendLockLog(lockID, log); err != nil {
+				return false, err
+			}
+		}
 		err := r.sess.send(&pb.ProxyMessage{Msg: &pb.ProxyMessage_Heartbeat{Heartbeat: &pb.LockHeartbeatRequest{LockId: lockID}}})
 		return err == nil, err
 	}

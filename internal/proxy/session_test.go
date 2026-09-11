@@ -45,6 +45,22 @@ type fakeSessionServer struct {
 	unimplement bool
 	push        chan *pb.OrchestratorMessage
 	kill        chan struct{}
+	lastRelease *pb.ReleaseLockRequest
+}
+
+// ReleaseLock is the unary handler used by tests that check what a client
+// drained and sent on release (e.g. entries requeued by a failed flush).
+func (f *fakeSessionServer) ReleaseLock(ctx context.Context, in *pb.ReleaseLockRequest) (*pb.ReleaseLockResponse, error) {
+	f.mu.Lock()
+	f.lastRelease = in
+	f.mu.Unlock()
+	return &pb.ReleaseLockResponse{Released: true}, nil
+}
+
+func (f *fakeSessionServer) release() *pb.ReleaseLockRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastRelease
 }
 
 func newFakeSessionServer() *fakeSessionServer {
@@ -311,6 +327,28 @@ func TestRouterSendsReportsAndHeartbeatsOnStream(t *testing.T) {
 	}
 	if l := msgs[3].GetLockLog(); l == nil || l.LockId != "lock-1" || l.Entries[0].Service != "shell:ls" {
 		t.Errorf("lock log not on stream: %+v", msgs[3])
+	}
+}
+
+// TestRouterHeartbeatShipsLogAheadOfHeartbeatOnStream guards against the log
+// argument being silently dropped: LockHeartbeat on the stream must ship any
+// entries as a LockLog message before the heartbeat, not discard them.
+func TestRouterHeartbeatShipsLogAheadOfHeartbeatOnStream(t *testing.T) {
+	f := newFakeSessionServer()
+	r := newRouterWithSession(t, f)
+
+	alive, err := r.LockHeartbeat("lock-1", []*pb.LockLogEntry{{Service: "shell:late"}})
+	if err != nil || !alive {
+		t.Fatalf("LockHeartbeat with log: alive=%v err=%v", alive, err)
+	}
+	waitFor(t, "log then heartbeat on stream", func() bool { msgs, _ := f.snapshot(); return len(msgs) == 3 })
+	msgs, _ := f.snapshot()
+	l := msgs[1].GetLockLog()
+	if l == nil || l.LockId != "lock-1" || len(l.Entries) != 1 || l.Entries[0].Service != "shell:late" {
+		t.Errorf("log not shipped ahead of heartbeat: %+v", msgs[1])
+	}
+	if h := msgs[2].GetHeartbeat(); h == nil || h.LockId != "lock-1" {
+		t.Errorf("heartbeat not sent after log: %+v", msgs[2])
 	}
 }
 

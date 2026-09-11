@@ -14,7 +14,11 @@ func newManagerOnSession(t *testing.T, f *fakeSessionServer, heartbeatSecs int64
 	r := newRouterWithSession(t, f)
 	m := NewScopedPortManager(r, NewDeviceListTracker(r), heartbeatSecs)
 	m.flushInterval = 20 * time.Millisecond
-	t.Cleanup(func() { for _, sp := range m.GetAllScopedPorts() { m.CloseScopedPort(sp.LockID) } })
+	t.Cleanup(func() {
+		for _, sp := range m.GetAllScopedPorts() {
+			m.CloseScopedPort(sp.LockID)
+		}
+	})
 	return m, r
 }
 
@@ -78,6 +82,30 @@ func TestScopedPortRequeuesWhileSessionDownAndDeliversAfterReconnect(t *testing.
 		}
 		return false
 	})
+}
+
+// TestScopedPortReleaseDrainsEntriesRequeuedByFailedFlush guards against
+// Release/ShutdownAll stranding entries: CloseScopedPort must wait for
+// runKeepalive to stop touching the log before Release drains it, so an
+// entry a failed flush requeued while the stream was down still rides the
+// release call.
+func TestScopedPortReleaseDrainsEntriesRequeuedByFailedFlush(t *testing.T) {
+	f := newFakeSessionServer()
+	m, r := newManagerOnSession(t, f, 3600)
+	sp, _ := m.CreateScopedPort("lock-1", map[string]struct{}{"DEV1": {}})
+
+	f.kill <- struct{}{}
+	waitFor(t, "stream down", func() bool { return !r.sess.connected() })
+	sp.Log.Record(&pb.LockLogEntry{Service: "shell:stranded"})
+	time.Sleep(50 * time.Millisecond) // a few flush ticks fail and requeue while the stream is down
+
+	if !m.Release("lock-1", "success") {
+		t.Fatalf("Release reported failure")
+	}
+	rel := f.release()
+	if rel == nil || rel.LockId != "lock-1" || len(rel.Log) != 1 || rel.Log[0].Service != "shell:stranded" {
+		t.Errorf("release did not carry entry requeued by failed flush: %+v", rel)
+	}
 }
 
 func TestScopedPortHeartbeatsOnlyWhenNoLogWasFlushed(t *testing.T) {

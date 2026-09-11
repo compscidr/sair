@@ -12,13 +12,16 @@ import (
 
 // ScopedPort represents a scoped ADB listener port for a specific lock.
 type ScopedPort struct {
-	LockID     string
-	Serials    map[string]struct{}
-	Port       int
-	listener   net.Listener
-	CreatedAt  time.Time
-	stopCh     chan struct{}
+	LockID        string
+	Serials       map[string]struct{}
+	Port          int
+	listener      net.Listener
+	CreatedAt     time.Time
+	stopCh        chan struct{}
 	heartbeatStop chan struct{}
+	// keepaliveDone is closed when runKeepalive returns, so CloseScopedPort can
+	// wait for it before a caller drains the log (nothing left flushing/requeuing).
+	keepaliveDone chan struct{}
 	// Log of ADB requests made on this port, shipped to the orchestrator on
 	// each heartbeat and on release.
 	Log *LockLog
@@ -30,13 +33,13 @@ type ScopedPort struct {
 // The bare port (5037) shows no devices; runners must acquire a scoped port
 // via the proxy HTTP API to access any device.
 type ScopedPortManager struct {
-	mu                     sync.Mutex
-	commandRouter          *CommandRouter
-	deviceListTracker      *DeviceListTracker
-	heartbeatIntervalSecs  int64
+	mu                    sync.Mutex
+	commandRouter         *CommandRouter
+	deviceListTracker     *DeviceListTracker
+	heartbeatIntervalSecs int64
 	// How often buffered log entries are shipped on the session. Tests shorten it.
-	flushInterval          time.Duration
-	scopedPorts            map[string]*ScopedPort
+	flushInterval time.Duration
+	scopedPorts   map[string]*ScopedPort
 }
 
 func NewScopedPortManager(
@@ -102,6 +105,7 @@ func (m *ScopedPortManager) CreateScopedPort(lockID string, serials map[string]s
 		CreatedAt:     time.Now(),
 		stopCh:        make(chan struct{}),
 		heartbeatStop: make(chan struct{}),
+		keepaliveDone: make(chan struct{}),
 		Log:           &LockLog{},
 	}
 
@@ -150,6 +154,7 @@ func (m *ScopedPortManager) CloseScopedPort(lockID string) bool {
 	close(sp.heartbeatStop)
 	close(sp.stopCh)
 	sp.listener.Close()
+	<-sp.keepaliveDone // wait for runKeepalive to stop touching sp.Log before a caller drains it
 
 	slog.Info("closed scoped port", "port", sp.Port, "lockId", lockID)
 	return true
@@ -221,6 +226,7 @@ func (m *ScopedPortManager) runAcceptLoop(sp *ScopedPort) {
 // heartbeatIntervalSecs, but only when no log was flushed in that interval:
 // on the orchestrator, log traffic counts as activity.
 func (m *ScopedPortManager) runKeepalive(sp *ScopedPort) {
+	defer close(sp.keepaliveDone)
 	flush := time.NewTicker(m.flushInterval)
 	defer flush.Stop()
 	beat := time.NewTicker(time.Duration(m.heartbeatIntervalSecs) * time.Second)
@@ -246,7 +252,7 @@ func (m *ScopedPortManager) runKeepalive(sp *ScopedPort) {
 				flushedSinceBeat = false
 				continue
 			}
-			entries := sp.Log.Drain() // non-empty only in unary fallback
+			entries := sp.Log.Drain()
 			alive, err := m.commandRouter.LockHeartbeat(sp.LockID, entries)
 			if err != nil {
 				sp.Log.Requeue(entries)
@@ -257,7 +263,9 @@ func (m *ScopedPortManager) runKeepalive(sp *ScopedPort) {
 			}
 			if !alive {
 				slog.Warn("lock expired on orchestrator; closing scoped port", "lockId", sp.LockID, "port", sp.Port)
-				m.CloseScopedPort(sp.LockID)
+				// Close asynchronously: CloseScopedPort waits on keepaliveDone,
+				// which this goroutine only closes on return, right below.
+				go m.CloseScopedPort(sp.LockID)
 				return
 			}
 		case <-sp.heartbeatStop:
