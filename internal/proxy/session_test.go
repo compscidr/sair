@@ -436,3 +436,33 @@ func TestRouterDropsReportAndHoldsHeartbeatWhileReconnecting(t *testing.T) {
 		t.Errorf("a heartbeat while reconnecting must say the session is down, got unsent=%v err=%v", unsent, err)
 	}
 }
+
+func TestSessionHelloCarriesConfiguredHeartbeatInterval(t *testing.T) {
+	f := newFakeSessionServer()
+	client := startFakeOrchestrator(t, f)
+	r := &CommandRouter{orchClient: client, apiKey: "key-1", proxyID: "host-a"}
+	r.StartSession("v1", 45, nil, nil)
+	t.Cleanup(r.sess.stop)
+	waitFor(t, "hello", func() bool { msgs, _ := f.snapshot(); return len(msgs) >= 1 })
+	msgs, _ := f.snapshot()
+	if got := msgs[0].GetHello().GetLockHeartbeatIntervalS(); got != 45 {
+		t.Errorf("hello heartbeat interval = %d, want 45", got)
+	}
+}
+
+func TestDeviceTrackerReportNowSendsCurrentList(t *testing.T) {
+	f := newFakeSessionServer()
+	r := newRouterWithSession(t, f)
+	tr := NewDeviceListTracker(r)
+	tr.UpdateDevices("10.0.0.5:8080", []*pb.DeviceInfo{{Serial: "DEV7"}})
+	tr.ReportNow()
+	waitFor(t, "devices on stream", func() bool {
+		msgs, _ := f.snapshot()
+		for _, m := range msgs {
+			if d := m.GetDevices(); d != nil && len(d.Devices) == 1 && d.Devices[0].Serial == "DEV7" {
+				return true
+			}
+		}
+		return false
+	})
+}

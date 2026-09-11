@@ -172,6 +172,10 @@ func (t *DeviceListTracker) reapAndReport() {
 	}
 }
 
+// ReportNow sends the current device list immediately; used after a session
+// reconnect so the orchestrator does not wait for the next tick.
+func (t *DeviceListTracker) ReportNow() { t.reapAndReport() }
+
 func (t *DeviceListTracker) Stop() {
 	close(t.stopCh)
 }

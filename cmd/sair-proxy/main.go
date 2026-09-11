@@ -35,6 +35,7 @@ func main() {
 		"http_api", httpAPIHost+":"+strconv.Itoa(httpAPIPort),
 		"orchestrator", orchestratorAddr,
 		"tls", orchestratorTLS,
+		"proxy_id", proxy.ProxyID(),
 	)
 
 	commandRouter, err := proxy.NewCommandRouter(orchestratorAddr, apiKey, orchestratorTLS)
@@ -45,6 +46,11 @@ func main() {
 
 	deviceListTracker := proxy.NewDeviceListTracker(commandRouter)
 	scopedPortManager := proxy.NewScopedPortManager(commandRouter, deviceListTracker, heartbeatInterval)
+
+	// Long-lived stream to the orchestrator: identity, device reports, heartbeats
+	// and live logs. Falls back to the unary calls against an older orchestrator.
+	commandRouter.StartSession(version.Version, heartbeatInterval, scopedPortManager.OnLockExpired, deviceListTracker.ReportNow)
+
 	httpAPI := proxy.NewHTTPApi(scopedPortManager, deviceListTracker, apiKey, httpAPIPort, httpAPIHost)
 
 	adbProxy := proxy.NewAdbProxy(port, commandRouter, deviceListTracker)
