@@ -139,8 +139,10 @@ The proxy exposes two ports:
 
 ### Tools
 
-Copy `tools/sair-acquire` and `tools/sair-release` into your CI project or add
-this repo's `tools/` directory to `PATH`.
+On GitHub Actions, `uses: compscidr/sair@v0.0.21` (or any later release tag)
+puts both tools on `PATH`; see the workflow example below. Elsewhere, copy
+`tools/sair-acquire` and `tools/sair-release` into your CI project or add this
+repo's `tools/` directory to `PATH`.
 
 **Acquire** a device lock (blocks until devices are available):
 
@@ -286,8 +288,9 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      # Puts sair-acquire and sair-release on PATH, pinned to this release.
-      # Bump the tag to upgrade; the release notes list breaking changes.
+      # Puts sair-acquire and sair-release on PATH, pinned to a release tag
+      # (the action ships from v0.0.21 on). Bump the tag to upgrade; the
+      # release notes list breaking changes.
       - uses: compscidr/sair@v0.0.21
 
       - name: Acquire device
