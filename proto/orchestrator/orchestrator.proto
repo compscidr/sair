@@ -10,6 +10,10 @@ service Orchestrator {
   rpc ReleaseLock(ReleaseLockRequest) returns (ReleaseLockResponse) {}
   rpc LockHeartbeat(LockHeartbeatRequest) returns (LockHeartbeatResponse) {}
   rpc ReportDevices(ReportDevicesRequest) returns (ReportDevicesResponse) {}
+  // One long-lived stream per proxy: version and identity first, then device
+  // reports, lock heartbeats and lock log entries; the orchestrator pushes
+  // lock expiry back. Replaces the periodic unary calls for proxies that use it.
+  rpc Session(stream ProxyMessage) returns (stream OrchestratorMessage) {}
 }
 
 message ListDevicesRequest {
@@ -45,6 +49,9 @@ message AcquireLockRequest {
   int32 count = 3;
   // Link to the CI run holding the lock (e.g. a GitHub Actions run URL).
   string run_url = 4;
+  // Same value as ProxyHello.proxy_id. Locks are granted only on devices this
+  // proxy reported. Empty from proxies that predate sessions.
+  string proxy_id = 6;
 }
 
 message AcquireLockResponse {
@@ -97,3 +104,42 @@ message ReportDevicesRequest {
 }
 
 message ReportDevicesResponse {}
+
+// Proxy -> orchestrator envelope. hello is always the first message.
+message ProxyMessage {
+  oneof msg {
+    ProxyHello hello = 1;
+    ReportDevicesRequest devices = 2;   // full list, same semantics as the unary call
+    LockLog lock_log = 3;
+    LockHeartbeatRequest heartbeat = 4; // its log field is left empty on the stream
+  }
+}
+
+message ProxyHello {
+  string version = 1;                  // internal/version.Version, "dev" for local builds
+  string proxy_id = 2;                 // hostname by default, PROXY_ID env overrides
+  int64 device_report_interval_s = 3;  // informational
+  int64 lock_heartbeat_interval_s = 4; // informational
+}
+
+message LockLog {
+  string lock_id = 1;
+  repeated LockLogEntry entries = 2;
+}
+
+// Orchestrator -> proxy envelope.
+message OrchestratorMessage {
+  oneof msg {
+    OrchestratorWelcome welcome = 1;
+    LockExpired lock_expired = 2;
+  }
+}
+
+message OrchestratorWelcome {
+  string version = 1;   // orchestrator build commit
+  string tenant_id = 2; // which account the proxy landed in
+}
+
+message LockExpired {
+  string lock_id = 1;
+}
