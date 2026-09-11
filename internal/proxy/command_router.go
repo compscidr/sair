@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -31,6 +32,7 @@ type CommandRouter struct {
 	orchClient pb.OrchestratorClient
 	apiKey     string
 	proxyID    string
+	sess       *session
 
 	// Device-source connections, created lazily when sources register
 	dsMu    sync.Mutex
@@ -46,6 +48,11 @@ func NewCommandRouter(orchestratorAddr, apiKey string, orchestratorTLS bool) (*C
 	} else {
 		orchOpts = append(orchOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
+	orchOpts = append(orchOpts, grpc.WithKeepaliveParams(keepalive.ClientParameters{
+		Time:                30 * time.Second,
+		Timeout:             10 * time.Second,
+		PermitWithoutStream: true,
+	}))
 
 	orchConn, err := grpc.NewClient(orchestratorAddr, orchOpts...)
 	if err != nil {
@@ -269,7 +276,23 @@ func (r *CommandRouter) LockHeartbeat(lockID string, log []*pb.LockLogEntry) (bo
 	return resp.Alive, nil
 }
 
+// StartSession opens the long-lived stream to the orchestrator. onExpired is
+// called when the orchestrator reports a lock gone; onConnected after every
+// (re)connect so the caller can resend the device list.
+func (r *CommandRouter) StartSession(version string, heartbeatIntervalS int64, onExpired func(lockID string), onConnected func()) {
+	r.sess = newSession(r.orchClient, r.apiKey, r.proxyID, version, heartbeatIntervalS, onExpired, onConnected)
+	r.sess.start()
+}
+
+// sessionUp reports whether periodic traffic should go on the stream.
+func (r *CommandRouter) sessionUp() bool {
+	return r.sess != nil && r.sess.connected()
+}
+
 func (r *CommandRouter) Shutdown() {
+	if r.sess != nil {
+		r.sess.stop()
+	}
 	if err := r.orchConn.Close(); err != nil {
 		slog.Error("failed to close orchestrator connection", "error", err)
 	}
