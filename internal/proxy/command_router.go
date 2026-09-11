@@ -30,6 +30,7 @@ type CommandRouter struct {
 	orchConn   *grpc.ClientConn
 	orchClient pb.OrchestratorClient
 	apiKey     string
+	proxyID    string
 
 	// Device-source connections, created lazily when sources register
 	dsMu    sync.Mutex
@@ -55,6 +56,7 @@ func NewCommandRouter(orchestratorAddr, apiKey string, orchestratorTLS bool) (*C
 		orchConn:   orchConn,
 		orchClient: pb.NewOrchestratorClient(orchConn),
 		apiKey:     apiKey,
+		proxyID:    ProxyID(),
 		dsConns:    make(map[string]*grpc.ClientConn),
 		dsClients:  make(map[string]dspb.DeviceSourceClient),
 	}, nil
@@ -226,7 +228,7 @@ func (r *CommandRouter) AcquireLock(serials map[string]struct{}, count int32, de
 	ctx, cancel := r.ctxWithTimeout(time.Duration(deadlineMinutes) * time.Minute)
 	defer cancel()
 
-	req := &pb.AcquireLockRequest{Repo: repo, Count: count, RunUrl: runURL}
+	req := &pb.AcquireLockRequest{Repo: repo, Count: count, RunUrl: runURL, ProxyId: r.proxyID}
 	for s := range serials {
 		req.Serials = append(req.Serials, s)
 	}
