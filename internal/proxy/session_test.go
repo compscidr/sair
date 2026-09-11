@@ -310,9 +310,9 @@ func TestRouterSendsReportsAndHeartbeatsOnStream(t *testing.T) {
 	if err := r.ReportDevices([]*pb.DeviceInfo{{Serial: "DEV1"}}); err != nil {
 		t.Fatalf("ReportDevices: %v", err)
 	}
-	alive, err := r.LockHeartbeat("lock-1", nil)
-	if err != nil || !alive {
-		t.Fatalf("LockHeartbeat on stream: alive=%v err=%v", alive, err)
+	alive, unsent, err := r.LockHeartbeat("lock-1", nil)
+	if err != nil || !alive || len(unsent) != 0 {
+		t.Fatalf("LockHeartbeat on stream: alive=%v unsent=%v err=%v", alive, unsent, err)
 	}
 	if err := r.SendLockLog("lock-1", []*pb.LockLogEntry{{Service: "shell:ls"}}); err != nil {
 		t.Fatalf("SendLockLog: %v", err)
@@ -330,25 +330,36 @@ func TestRouterSendsReportsAndHeartbeatsOnStream(t *testing.T) {
 	}
 }
 
-// TestRouterHeartbeatShipsLogAheadOfHeartbeatOnStream guards against the log
-// argument being silently dropped: LockHeartbeat on the stream must ship any
-// entries as a LockLog message before the heartbeat, not discard them.
-func TestRouterHeartbeatShipsLogAheadOfHeartbeatOnStream(t *testing.T) {
+// TestRouterHeartbeatOnStreamHandsEntriesBack guards against the two-step
+// send that could duplicate entries (ship a LockLog, then fail to report the
+// heartbeat that followed it): LockHeartbeat on the stream must make exactly
+// one send — the heartbeat, carrying no log — and hand the log argument
+// straight back as unsent, leaving it to the caller to decide what happens
+// to it.
+func TestRouterHeartbeatOnStreamHandsEntriesBack(t *testing.T) {
 	f := newFakeSessionServer()
 	r := newRouterWithSession(t, f)
 
-	alive, err := r.LockHeartbeat("lock-1", []*pb.LockLogEntry{{Service: "shell:late"}})
+	in := []*pb.LockLogEntry{{Service: "shell:late"}}
+	alive, unsent, err := r.LockHeartbeat("lock-1", in)
 	if err != nil || !alive {
 		t.Fatalf("LockHeartbeat with log: alive=%v err=%v", alive, err)
 	}
-	waitFor(t, "log then heartbeat on stream", func() bool { msgs, _ := f.snapshot(); return len(msgs) == 3 })
-	msgs, _ := f.snapshot()
-	l := msgs[1].GetLockLog()
-	if l == nil || l.LockId != "lock-1" || len(l.Entries) != 1 || l.Entries[0].Service != "shell:late" {
-		t.Errorf("log not shipped ahead of heartbeat: %+v", msgs[1])
+	if len(unsent) != 1 || unsent[0] != in[0] {
+		t.Errorf("stream heartbeat must hand the log back unsent unchanged, got %+v", unsent)
 	}
-	if h := msgs[2].GetHeartbeat(); h == nil || h.LockId != "lock-1" {
-		t.Errorf("heartbeat not sent after log: %+v", msgs[2])
+	waitFor(t, "heartbeat on stream", func() bool { msgs, _ := f.snapshot(); return len(msgs) == 2 })
+	msgs, _ := f.snapshot()
+	if h := msgs[1].GetHeartbeat(); h == nil || h.LockId != "lock-1" || len(h.Log) != 0 {
+		t.Errorf("heartbeat wrong or carries a log: %+v", msgs[1])
+	}
+	// No LockLog should ever be sent by LockHeartbeat on the stream.
+	time.Sleep(30 * time.Millisecond)
+	msgs, _ = f.snapshot()
+	for _, msg := range msgs {
+		if msg.GetLockLog() != nil {
+			t.Errorf("unexpected LockLog on the stream from LockHeartbeat: %+v", msg)
+		}
 	}
 }
 
@@ -398,8 +409,8 @@ func TestRouterUsesUnaryInFallbackMode(t *testing.T) {
 	if err := r.ReportDevices(nil); err != nil {
 		t.Fatalf("unary ReportDevices: %v", err)
 	}
-	if alive, err := r.LockHeartbeat("lock-1", nil); err != nil || !alive {
-		t.Fatalf("unary LockHeartbeat: alive=%v err=%v", alive, err)
+	if alive, unsent, err := r.LockHeartbeat("lock-1", nil); err != nil || !alive || len(unsent) != 0 {
+		t.Fatalf("unary LockHeartbeat: alive=%v unsent=%v err=%v", alive, unsent, err)
 	}
 	if err := r.SendLockLog("lock-1", nil); err != errSessionDown {
 		t.Errorf("SendLockLog in fallback should be errSessionDown (logs ride the unary heartbeat), got %v", err)
@@ -421,7 +432,7 @@ func TestRouterDropsReportAndHoldsHeartbeatWhileReconnecting(t *testing.T) {
 	if err := r.ReportDevices(nil); err != nil {
 		t.Errorf("a report while reconnecting is dropped silently, got %v", err)
 	}
-	if _, err := r.LockHeartbeat("lock-1", nil); err != errSessionDown {
-		t.Errorf("a heartbeat while reconnecting must say the session is down, got %v", err)
+	if _, unsent, err := r.LockHeartbeat("lock-1", nil); err != errSessionDown || len(unsent) != 0 {
+		t.Errorf("a heartbeat while reconnecting must say the session is down, got unsent=%v err=%v", unsent, err)
 	}
 }

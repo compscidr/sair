@@ -278,32 +278,30 @@ func (r *CommandRouter) ReleaseLock(lockID, status string, log []*pb.LockLogEntr
 	return resp.Released, nil
 }
 
-// LockHeartbeat keeps the lock alive. On the session, any log entries are
-// shipped as a LockLog message ahead of the heartbeat (a send failure there
-// is returned so the caller requeues instead of losing them); unary it ships
-// the entries recorded since the previous call as part of the heartbeat
-// request. Returns errSessionDown while a reconnect is in progress so the
-// caller keeps its entries.
-func (r *CommandRouter) LockHeartbeat(lockID string, log []*pb.LockLogEntry) (bool, error) {
+// LockHeartbeat keeps the lock alive with exactly one send per call — no
+// two-step path that could ship a log and then fail to report it (or vice
+// versa report success without the heartbeat landing). On the stream it
+// sends only the heartbeat and never touches log: unsent is handed back
+// unchanged (whether the send succeeded or not), leaving it entirely to the
+// caller to requeue or ship on the next flush. Unary carries log atomically
+// in the same request as the heartbeat: unsent is nil on success (delivered)
+// or log unchanged on failure. Returns errSessionDown while a reconnect is
+// in progress, with unsent == log.
+func (r *CommandRouter) LockHeartbeat(lockID string, log []*pb.LockLogEntry) (alive bool, unsent []*pb.LockLogEntry, err error) {
 	if r.sessionUp() {
-		if len(log) > 0 {
-			if err := r.SendLockLog(lockID, log); err != nil {
-				return false, err
-			}
-		}
 		err := r.sess.send(&pb.ProxyMessage{Msg: &pb.ProxyMessage_Heartbeat{Heartbeat: &pb.LockHeartbeatRequest{LockId: lockID}}})
-		return err == nil, err
+		return err == nil, log, err
 	}
 	if r.sess != nil && !r.sess.unaryFallback() {
-		return false, errSessionDown
+		return false, log, errSessionDown
 	}
 	ctx, cancel := r.ctxWithTimeout(30 * time.Second)
 	defer cancel()
 	resp, err := r.orchClient.LockHeartbeat(ctx, &pb.LockHeartbeatRequest{LockId: lockID, Log: log})
 	if err != nil {
-		return false, err
+		return false, log, err
 	}
-	return resp.Alive, nil
+	return resp.Alive, nil, nil
 }
 
 // SendLockLog ships log entries on the session. errSessionDown when there is

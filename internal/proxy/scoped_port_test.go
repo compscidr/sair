@@ -160,45 +160,45 @@ loop:
 	waitFor(t, "heartbeat when idle", func() bool { msgs, _ := f.snapshot(); _, b := countKinds(msgs); return b >= 1 })
 }
 
-// TestScopedPortBeatNeverDuplicatesFlushedEntries guards against the beat
-// branch re-sending what the flush already delivered: on the stream, the
-// beat must never carry log entries (only the unary fallback does), so an
-// entry the flush shipped cannot also ride a later heartbeat and be
-// double-counted by the orchestrator after a partial-failure requeue.
-func TestScopedPortBeatNeverDuplicatesFlushedEntries(t *testing.T) {
+// TestScopedPortBeatDoesNotConsumePendingEntry guards against the beat
+// branch draining (and thereby losing or duplicating) an entry that is
+// simply waiting for its next flush tick: on the stream, a beat that fires
+// while an entry is buffered must neither ship it (no LockLog) nor carry it
+// on the heartbeat (empty Log) nor remove it from the buffer — it must stay
+// put for the flush. flushInterval is set far longer than the test so the
+// flush cannot fire and mask a bug in the beat branch.
+func TestScopedPortBeatDoesNotConsumePendingEntry(t *testing.T) {
 	f := newFakeSessionServer()
-	m, _ := newManagerOnSession(t, f, 1) // 1 s heartbeat, 20 ms flush interval
+	r := newRouterWithSession(t, f)
+	m := NewScopedPortManager(r, NewDeviceListTracker(r), 1) // 1 s heartbeat
+	m.flushInterval = 10 * time.Second                       // flush must not fire during the test
+	t.Cleanup(func() {
+		for _, sp := range m.GetAllScopedPorts() {
+			m.CloseScopedPort(sp.LockID)
+		}
+	})
 	sp, _ := m.CreateScopedPort("lock-1", map[string]struct{}{"DEV1": {}})
 
-	sp.Log.Record(&pb.LockLogEntry{Service: "shell:once"})
-	waitFor(t, "log flushed", func() bool { msgs, _ := f.snapshot(); l, _ := countKinds(msgs); return l >= 1 })
-
-	// Let a couple of heartbeat ticks pass so the beat had its shot at this entry.
-	time.Sleep(2200 * time.Millisecond)
+	sp.Log.Record(&pb.LockLogEntry{Service: "shell:pending"})
+	waitFor(t, "a heartbeat reaches the fake", func() bool {
+		msgs, _ := f.snapshot()
+		_, b := countKinds(msgs)
+		return b >= 1
+	})
 
 	msgs, _ := f.snapshot()
-	occurrences := 0
 	for _, msg := range msgs {
-		if hb := msg.GetHeartbeat(); hb != nil {
-			if len(hb.Log) != 0 {
-				t.Errorf("heartbeat carried a log on the stream: %+v", hb)
-			}
-			for _, e := range hb.Log {
-				if e.Service == "shell:once" {
-					occurrences++
-				}
-			}
+		if hb := msg.GetHeartbeat(); hb != nil && len(hb.Log) != 0 {
+			t.Errorf("heartbeat carried a log while an entry was pending: %+v", hb)
 		}
-		if l := msg.GetLockLog(); l != nil {
-			for _, e := range l.Entries {
-				if e.Service == "shell:once" {
-					occurrences++
-				}
-			}
+		if msg.GetLockLog() != nil {
+			t.Errorf("unexpected LockLog while the flush is parked: %+v", msg)
 		}
 	}
-	if occurrences != 1 {
-		t.Errorf("entry appeared %d times across the stream, want exactly 1", occurrences)
+
+	drained := sp.Log.Drain()
+	if len(drained) != 1 || drained[0].Service != "shell:pending" {
+		t.Errorf("beat must leave the pending entry for the flush, got %+v", drained)
 	}
 }
 
