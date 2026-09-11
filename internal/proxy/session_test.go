@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"sync"
@@ -306,6 +307,33 @@ func TestSessionRecvLoopIsNotBlockedByOnExpired(t *testing.T) {
 		defer mu.Unlock()
 		return len(got) == 2
 	})
+}
+
+// stubErrStream is a stub stream whose Send fails with a chosen error.
+type stubErrStream struct {
+	grpc.ClientStream
+	err error
+}
+
+func (st stubErrStream) Send(*pb.ProxyMessage) error         { return st.err }
+func (stubErrStream) Recv() (*pb.OrchestratorMessage, error) { select {} }
+
+func TestSessionSendOnDyingStreamReportsSessionDown(t *testing.T) {
+	// A stream that fails on Send is a session that is (about to be) down, whatever
+	// the transport says: EOF, Unavailable and Canceled all become errSessionDown so
+	// callers requeue quietly, and the dead stream is dropped so the next send does
+	// not touch it again.
+	for _, cause := range []error{io.EOF, status.Error(codes.Unavailable, "transport closing"), status.Error(codes.Canceled, "ctx")} {
+		s := newSession(nil, "k", "host-a", "v1", 60, nil, nil)
+		s.stream = stubErrStream{err: cause}
+		err := s.send(&pb.ProxyMessage{})
+		if !errors.Is(err, errSessionDown) {
+			t.Errorf("%v: want errSessionDown, got %v", cause, err)
+		}
+		if s.connected() {
+			t.Errorf("%v: dead stream still published as connected", cause)
+		}
+	}
 }
 
 // stubEOFStream is a stub grpc.BidiStreamingClient[pb.ProxyMessage,

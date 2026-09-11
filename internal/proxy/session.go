@@ -96,8 +96,37 @@ func (s *session) send(msg *pb.ProxyMessage) error {
 		return errSessionDown
 	}
 	s.sendMu.Lock()
-	defer s.sendMu.Unlock()
-	return stream.Send(msg)
+	err := stream.Send(msg)
+	s.sendMu.Unlock()
+	if err == nil {
+		return nil
+	}
+	if isStreamDead(err) {
+		// The transport closed under us: the Recv loop will see it and reconnect.
+		// Drop the stream now so callers stop hitting it, and report "down" so they
+		// requeue quietly rather than warn once per reconnect.
+		s.mu.Lock()
+		if s.stream == stream {
+			s.stream = nil
+		}
+		s.mu.Unlock()
+		return errSessionDown
+	}
+	return err
+}
+
+// isStreamDead reports whether a Send error means the stream itself is gone
+// (as opposed to a problem with this one message). grpc-go returns io.EOF from
+// Send once the stream has terminated and the real status is only on Recv.
+func isStreamDead(err error) bool {
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+	switch status.Code(err) {
+	case codes.Unavailable, codes.Canceled, codes.DeadlineExceeded, codes.Aborted:
+		return true
+	}
+	return false
 }
 
 func (s *session) run(ctx context.Context) {

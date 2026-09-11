@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"strings"
@@ -277,8 +278,13 @@ func TestScopedPortFlushLogsUnexpectedSendErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateScopedPort: %v", err)
 	}
-	// Make the next send fail with something other than errSessionDown.
-	r.beforeSendLockLog = func() { r.sess.mu.Lock(); r.sess.stream = &stubEOFStream{}; r.sess.mu.Unlock() }
+	// Make the next send fail with something that is not a dead stream: a plain
+	// error the transport would not produce, so it must surface as a warning.
+	r.beforeSendLockLog = func() {
+		r.sess.mu.Lock()
+		r.sess.stream = stubErrStream{err: errors.New("marshal: message too large")}
+		r.sess.mu.Unlock()
+	}
 	var buf logBuffer
 	restore := captureSlog(&buf)
 	defer restore()
