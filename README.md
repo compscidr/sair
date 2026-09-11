@@ -139,8 +139,10 @@ The proxy exposes two ports:
 
 ### Tools
 
-Copy `tools/sair-acquire` and `tools/sair-release` into your CI project or add
-this repo's `tools/` directory to `PATH`.
+On GitHub Actions, `uses: compscidr/sair@v0.0.21` (or any later release tag)
+puts both tools on `PATH`; see the workflow example below. Elsewhere, copy
+`tools/sair-acquire` and `tools/sair-release` into your CI project or add this
+repo's `tools/` directory to `PATH`.
 
 **Acquire** a device lock (blocks until devices are available):
 
@@ -286,12 +288,10 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      # Fetch the SAIR tools
-      - uses: actions/checkout@v4
-        with:
-          repository: compscidr/sair
-          path: sair
-          sparse-checkout: tools
+      # Puts sair-acquire and sair-release on PATH, pinned to a release tag
+      # (the action ships from v0.0.21 on). Bump the tag to upgrade; the
+      # release notes list breaking changes.
+      - uses: compscidr/sair@v0.0.21
 
       - name: Acquire device
         env:
@@ -299,7 +299,7 @@ jobs:
           SAIR_API_KEY: ${{ secrets.SAIR_API_KEY }}
         run: |
           # Also appends every variable to $GITHUB_ENV for the later steps
-          sair/tools/sair-acquire --count 1 > /dev/null
+          sair-acquire --count 1 > /dev/null
 
       - name: Run connected tests
         run: ./gradlew connectedCheck
@@ -308,7 +308,7 @@ jobs:
         if: always()
         env:
           SAIR_API_KEY: ${{ secrets.SAIR_API_KEY }}
-        run: sair/tools/sair-release --status ${{ job.status }}
+        run: sair-release --status ${{ job.status }}
 ```
 
 Key points about the workflow:
