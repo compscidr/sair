@@ -142,9 +142,37 @@ RESPONSE=$(curl "${CURL_ARGS[@]}" "${ACQUIRE_URL}") || {
 HTTP_STATUS=$(printf '%s\n' "$RESPONSE" | tail -n1)
 BODY=$(printf '%s\n' "$RESPONSE" | sed '$d')
 
+# Pulls .error out of the proxy's {"error":"..."} reply. Uses a real JSON
+# parser when one is around; the sed fallback handles the plain messages the
+# proxy actually sends but would stop at an escaped quote.
+json_error() {
+    if command -v jq >/dev/null 2>&1; then
+        jq -r '.error // empty' 2>/dev/null
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("error", ""))
+except Exception: pass' 2>/dev/null
+    else
+        sed -n 's/.*"error":"\([^"]*\)".*/\1/p'
+    fi
+}
+
+# Escapes text for a GitHub Actions workflow command. The message comes from
+# the server, so % and newlines must not be able to end the command or start
+# another one. Property values (the title) additionally escape : and ,.
+gh_escape() {
+    local s="$1"
+    s="${s//%/%25}"; s="${s//$'\r'/%0D}"; s="${s//$'\n'/%0A}"
+    printf '%s' "$s"
+}
+gh_escape_prop() {
+    local s; s=$(gh_escape "$1")
+    s="${s//:/%3A}"; s="${s//,/%2C}"
+    printf '%s' "$s"
+}
+
 if [[ "$HTTP_STATUS" -lt 200 || "$HTTP_STATUS" -ge 300 ]]; then
-    # The proxy answers {"error":"..."}; show the reason itself, not the JSON.
-    MSG=$(printf '%s' "$BODY" | sed -n 's/.*"error":"\([^"]*\)".*/\1/p')
+    MSG=$(printf '%s' "$BODY" | json_error)
     [[ -z "$MSG" ]] && MSG="${BODY:-<empty>}"
     if [[ "$HTTP_STATUS" == "429" ]]; then
         HEADLINE="plan limit reached"
@@ -156,7 +184,7 @@ if [[ "$HTTP_STATUS" -lt 200 || "$HTTP_STATUS" -ge 300 ]]; then
     # On GitHub Actions also raise an annotation so the reason shows on the
     # job summary. stderr, because callers often send stdout to /dev/null.
     if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
-        echo "::error title=sair-acquire: ${HEADLINE}::${MSG}" >&2
+        echo "::error title=$(gh_escape_prop "sair-acquire: ${HEADLINE}")::$(gh_escape "${MSG}")" >&2
     fi
     exit 1
 fi
