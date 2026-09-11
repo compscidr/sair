@@ -252,7 +252,18 @@ func (m *ScopedPortManager) runKeepalive(sp *ScopedPort) {
 				flushedSinceBeat = false
 				continue
 			}
-			entries := sp.Log.Drain()
+			// On the stream, never hand the heartbeat entries: LockHeartbeat
+			// ships a log as a separate LockLog send ahead of the heartbeat, and
+			// if that send succeeds but the heartbeat send then fails, the whole
+			// call errors and this branch would requeue a batch that already
+			// arrived — duplicating it after reconnect. Leaving the log alone
+			// here is safe: the next flush tick (at most flushInterval later)
+			// ships it. Only the unary fallback needs it, since that RPC carries
+			// the log atomically in the same request as the heartbeat.
+			var entries []*pb.LockLogEntry
+			if !m.commandRouter.sessionUp() {
+				entries = sp.Log.Drain()
+			}
 			alive, err := m.commandRouter.LockHeartbeat(sp.LockID, entries)
 			if err != nil {
 				sp.Log.Requeue(entries)

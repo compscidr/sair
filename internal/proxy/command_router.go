@@ -34,6 +34,10 @@ type CommandRouter struct {
 	proxyID    string
 	sess       *session
 
+	// beforeSendLockLog, when set, runs at the top of SendLockLog. Test-only
+	// hook used to pin a send mid-flight and exercise races deterministically.
+	beforeSendLockLog func()
+
 	// Device-source connections, created lazily when sources register
 	dsMu    sync.Mutex
 	dsConns map[string]*grpc.ClientConn          // sourceAddr -> conn
@@ -305,6 +309,9 @@ func (r *CommandRouter) LockHeartbeat(lockID string, log []*pb.LockLogEntry) (bo
 // SendLockLog ships log entries on the session. errSessionDown when there is
 // no stream, including unary fallback, where entries ride the heartbeat instead.
 func (r *CommandRouter) SendLockLog(lockID string, entries []*pb.LockLogEntry) error {
+	if r.beforeSendLockLog != nil {
+		r.beforeSendLockLog()
+	}
 	if !r.sessionUp() {
 		return errSessionDown
 	}
