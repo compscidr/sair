@@ -2,7 +2,10 @@ package proxy
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -266,4 +269,55 @@ func TestScopedPortClosesOnLockExpiredFromStream(t *testing.T) {
 
 	f.push <- &pb.OrchestratorMessage{Msg: &pb.OrchestratorMessage_LockExpired{LockExpired: &pb.LockExpired{LockId: "lock-1"}}}
 	waitFor(t, "port closed", func() bool { return len(m.GetAllScopedPorts()) == 0 })
+}
+
+func TestScopedPortFlushLogsUnexpectedSendErrors(t *testing.T) {
+	f := newFakeSessionServer()
+	m, r := newManagerOnSession(t, f, 3600)
+	sp, err := m.CreateScopedPort("lock-1", map[string]struct{}{"DEV1": {}})
+	if err != nil {
+		t.Fatalf("CreateScopedPort: %v", err)
+	}
+	// Make the next send fail with something that is not a dead stream: a plain
+	// error the transport would not produce, so it must surface as a warning.
+	r.beforeSendLockLog = func() {
+		r.sess.mu.Lock()
+		r.sess.stream = stubErrStream{err: errors.New("marshal: message too large")}
+		r.sess.mu.Unlock()
+	}
+	var buf logBuffer
+	restore := captureSlog(&buf)
+	defer restore()
+	sp.Log.Record(&pb.LockLogEntry{Service: "shell:ls"})
+	waitFor(t, "warning logged", func() bool { return buf.contains("lock log flush failed") })
+	if !buf.contains("lock-1") {
+		t.Errorf("warning does not name the lock: %s", buf.String())
+	}
+}
+
+// logBuffer collects slog output so a test can assert on what was logged.
+type logBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *logBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *logBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+func (l *logBuffer) contains(s string) bool { return strings.Contains(l.String(), s) }
+
+// captureSlog routes the default logger into buf until the returned func is called.
+func captureSlog(buf *logBuffer) func() {
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	return func() { slog.SetDefault(prev) }
 }
