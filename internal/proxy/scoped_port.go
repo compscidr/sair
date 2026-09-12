@@ -26,6 +26,44 @@ type ScopedPort struct {
 	// Log of ADB requests made on this port, shipped to the orchestrator on
 	// each heartbeat and on release.
 	Log *LockLog
+	// RemoteDevices are granted devices reached through the relay, keyed by
+	// serial. nil for none.
+	RemoteDevices map[string]*pb.DeviceInfo
+	// Stable transport ids for RemoteDevices, disjoint from the tracker's ids
+	// (which start at 1). One mutex guards both directions so they can never
+	// disagree: an id is only ever visible together with its reverse entry.
+	remoteMu       sync.Mutex
+	remoteBySerial map[string]int
+	remoteByID     map[int]string
+}
+
+// remoteTransportID returns a transport id for a remote serial, stable for the
+// port's lifetime. 0 for a serial that is not one of this port's remote devices.
+func (sp *ScopedPort) remoteTransportID(serial string) int {
+	if _, ok := sp.RemoteDevices[serial]; !ok {
+		return 0
+	}
+	sp.remoteMu.Lock()
+	defer sp.remoteMu.Unlock()
+	if id, ok := sp.remoteBySerial[serial]; ok {
+		return id
+	}
+	if sp.remoteBySerial == nil {
+		sp.remoteBySerial = map[string]int{}
+		sp.remoteByID = map[int]string{}
+	}
+	id := 1_000_000 + len(sp.remoteBySerial) + 1
+	sp.remoteBySerial[serial] = id
+	sp.remoteByID[id] = serial
+	return id
+}
+
+// remoteSerialByTransportID is the reverse of remoteTransportID, for
+// host:transport-id: on a remote device's id. Returns "" if unknown.
+func (sp *ScopedPort) remoteSerialByTransportID(id int) string {
+	sp.remoteMu.Lock()
+	defer sp.remoteMu.Unlock()
+	return sp.remoteByID[id]
 }
 
 // ScopedPortManager manages scoped ADB listener ports for per-runner device isolation.
@@ -70,7 +108,7 @@ func (m *ScopedPortManager) Acquire(requestedSerials map[string]struct{}, count 
 	if err != nil {
 		return nil, err
 	}
-	sp, err := m.CreateScopedPort(result.LockID, result.Serials)
+	sp, err := m.CreateScopedPort(result.LockID, result.Serials, result.RemoteDevices)
 	if err != nil {
 		// Clean up: release the lock if we can't create the port
 		if _, releaseErr := m.commandRouter.ReleaseLock(result.LockID, "error", nil); releaseErr != nil {
@@ -83,7 +121,7 @@ func (m *ScopedPortManager) Acquire(requestedSerials map[string]struct{}, count 
 }
 
 // CreateScopedPort creates a scoped port for an already-acquired lock.
-func (m *ScopedPortManager) CreateScopedPort(lockID string, serials map[string]struct{}) (*ScopedPort, error) {
+func (m *ScopedPortManager) CreateScopedPort(lockID string, serials map[string]struct{}, remoteDevices map[string]*pb.DeviceInfo) (*ScopedPort, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -108,6 +146,7 @@ func (m *ScopedPortManager) CreateScopedPort(lockID string, serials map[string]s
 		heartbeatStop: make(chan struct{}),
 		keepaliveDone: make(chan struct{}),
 		Log:           &LockLog{},
+		RemoteDevices: remoteDevices,
 	}
 
 	// Start accept loop
@@ -218,7 +257,9 @@ func (m *ScopedPortManager) runAcceptLoop(sp *ScopedPort) {
 				slog.Warn("failed to set TCP_NODELAY", "remote", conn.RemoteAddr(), "error", err)
 			}
 		}
-		adbConn := NewAdbConnection(conn, m.commandRouter, m.deviceListTracker, sp.Serials, sp.Log)
+		adbConn := NewAdbConnection(conn, m.commandRouter, m.deviceListTracker, sp.Serials, sp.Log, sp.RemoteDevices)
+		adbConn.remoteTransportID = sp.remoteTransportID
+		adbConn.remoteSerialByTransportID = sp.remoteSerialByTransportID
 		go adbConn.Handle()
 	}
 }

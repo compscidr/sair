@@ -46,10 +46,11 @@ func main() {
 
 	deviceListTracker := proxy.NewDeviceListTracker(commandRouter)
 	scopedPortManager := proxy.NewScopedPortManager(commandRouter, deviceListTracker, heartbeatInterval)
+	commandRouter.ResolveSource = deviceListTracker.GetSourceAddr
 
 	// Long-lived stream to the orchestrator: identity, device reports, heartbeats
 	// and live logs. Falls back to the unary calls against an older orchestrator.
-	commandRouter.StartSession(version.Version, heartbeatInterval, scopedPortManager.OnLockExpired, deviceListTracker.ReportNow)
+	commandRouter.StartSession(version.Version, heartbeatInterval, scopedPortManager.OnLockExpired, deviceListTracker.ReportNow, commandRouter.ServeRelay)
 
 	httpAPI := proxy.NewHTTPApi(scopedPortManager, deviceListTracker, apiKey, httpAPIPort, httpAPIHost)
 

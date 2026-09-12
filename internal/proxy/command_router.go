@@ -22,6 +22,10 @@ import (
 type LockResult struct {
 	LockID  string
 	Serials map[string]struct{}
+	// RemoteDevices are granted devices that live on another proxy (or
+	// tenant), reached through the relay, with the info their owner
+	// reported. Keyed by serial; nil for none.
+	RemoteDevices map[string]*pb.DeviceInfo
 }
 
 // CommandRouter is a gRPC client that routes:
@@ -37,6 +41,12 @@ type CommandRouter struct {
 	// beforeSendLockLog, when set, runs at the top of SendLockLog. Test-only
 	// hook used to pin a send mid-flight and exercise races deterministically.
 	beforeSendLockLog func()
+
+	// dsDialer overrides how device-source connections are dialed (tests use bufconn).
+	dsDialer func(ctx context.Context, addr string) (net.Conn, error)
+	// ResolveSource maps a local serial to its device-source address ("" if unknown).
+	// Set by main to the device tracker's GetSourceAddr; exported for that wiring.
+	ResolveSource func(serial string) string
 
 	// Device-source connections, created lazily when sources register
 	dsMu    sync.Mutex
@@ -84,7 +94,7 @@ func (r *CommandRouter) getOrCreateDSClient(sourceAddr string) (dspb.DeviceSourc
 	}
 
 	slog.Info("creating gRPC connection to device-source", "addr", sourceAddr)
-	conn, err := grpc.NewClient(sourceAddr,
+	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(64*1024*1024),
@@ -92,9 +102,20 @@ func (r *CommandRouter) getOrCreateDSClient(sourceAddr string) (dspb.DeviceSourc
 		),
 		grpc.WithInitialWindowSize(16*1024*1024),
 		grpc.WithInitialConnWindowSize(16*1024*1024),
-	)
+	}
+	if r.dsDialer != nil {
+		opts = append(opts, grpc.WithContextDialer(r.dsDialer))
+	}
+	conn, err := grpc.NewClient(sourceAddr, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("connect to device-source %s: %w", sourceAddr, err)
+	}
+
+	if r.dsConns == nil {
+		r.dsConns = make(map[string]*grpc.ClientConn)
+	}
+	if r.dsClients == nil {
+		r.dsClients = make(map[string]dspb.DeviceSourceClient)
 	}
 
 	client := dspb.NewDeviceSourceClient(conn)
@@ -262,7 +283,14 @@ func (r *CommandRouter) AcquireLock(serials map[string]struct{}, count int32, de
 	for _, s := range resp.Serials {
 		resultSerials[s] = struct{}{}
 	}
-	return &LockResult{LockID: resp.LockId, Serials: resultSerials}, nil
+	var remote map[string]*pb.DeviceInfo
+	if len(resp.RemoteDevices) > 0 {
+		remote = make(map[string]*pb.DeviceInfo, len(resp.RemoteDevices))
+		for _, d := range resp.RemoteDevices {
+			remote[d.Serial] = d
+		}
+	}
+	return &LockResult{LockID: resp.LockId, Serials: resultSerials, RemoteDevices: remote}, nil
 }
 
 // ReleaseLock releases a lock, reporting the job outcome so the orchestrator
@@ -318,9 +346,10 @@ func (r *CommandRouter) SendLockLog(lockID string, entries []*pb.LockLogEntry) e
 
 // StartSession opens the long-lived stream to the orchestrator. onExpired is
 // called when the orchestrator reports a lock gone; onConnected after every
-// (re)connect so the caller can resend the device list.
-func (r *CommandRouter) StartSession(version string, heartbeatIntervalS int64, onExpired func(lockID string), onConnected func()) {
-	r.sess = newSession(r.orchClient, r.apiKey, r.proxyID, version, heartbeatIntervalS, onExpired, onConnected)
+// (re)connect so the caller can resend the device list; onRelayOpen when the
+// orchestrator wants this proxy to serve a relayed connection.
+func (r *CommandRouter) StartSession(version string, heartbeatIntervalS int64, onExpired func(lockID string), onConnected func(), onRelayOpen func(*pb.RelayOpen)) {
+	r.sess = newSession(r.orchClient, r.apiKey, r.proxyID, version, heartbeatIntervalS, onExpired, onConnected, onRelayOpen)
 	r.sess.start()
 }
 

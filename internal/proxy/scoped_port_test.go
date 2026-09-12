@@ -46,7 +46,7 @@ func countKinds(msgs []*pb.ProxyMessage) (logs, beats int) {
 func TestScopedPortFlushesLogWithinInterval(t *testing.T) {
 	f := newFakeSessionServer()
 	m, _ := newManagerOnSession(t, f, 3600)
-	sp, err := m.CreateScopedPort("lock-1", map[string]struct{}{"DEV1": {}})
+	sp, err := m.CreateScopedPort("lock-1", map[string]struct{}{"DEV1": {}}, nil)
 	if err != nil {
 		t.Fatalf("CreateScopedPort: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestScopedPortRequeuesWhileSessionDownAndDeliversAfterReconnect(t *testing.
 	f := newFakeSessionServer()
 	m, r := newManagerOnSession(t, f, 3600)
 	r.sess.backoffMin, r.sess.backoffMax = 20*time.Millisecond, 20*time.Millisecond
-	sp, _ := m.CreateScopedPort("lock-1", map[string]struct{}{"DEV1": {}})
+	sp, _ := m.CreateScopedPort("lock-1", map[string]struct{}{"DEV1": {}}, nil)
 
 	f.kill <- struct{}{}
 	waitFor(t, "stream down", func() bool { return !r.sess.connected() })
@@ -103,7 +103,7 @@ func TestScopedPortRequeuesWhileSessionDownAndDeliversAfterReconnect(t *testing.
 func TestScopedPortReleaseWaitsForInFlightFlushBeforeDraining(t *testing.T) {
 	f := newFakeSessionServer()
 	m, r := newManagerOnSession(t, f, 3600)
-	sp, _ := m.CreateScopedPort("lock-1", map[string]struct{}{"DEV1": {}})
+	sp, _ := m.CreateScopedPort("lock-1", map[string]struct{}{"DEV1": {}}, nil)
 
 	flushStarted := make(chan struct{})
 	releaseCalled := make(chan struct{})
@@ -145,7 +145,7 @@ func TestScopedPortReleaseWaitsForInFlightFlushBeforeDraining(t *testing.T) {
 func TestScopedPortHeartbeatsOnlyWhenNoLogWasFlushed(t *testing.T) {
 	f := newFakeSessionServer()
 	m, _ := newManagerOnSession(t, f, 1) // 1 s heartbeat for the test
-	sp, _ := m.CreateScopedPort("lock-1", map[string]struct{}{"DEV1": {}})
+	sp, _ := m.CreateScopedPort("lock-1", map[string]struct{}{"DEV1": {}}, nil)
 
 	// Keep the log busy for ~1.2s: every flush carries an entry, so no heartbeat should fire.
 	stop := time.After(1200 * time.Millisecond)
@@ -185,7 +185,7 @@ func TestScopedPortBeatDoesNotConsumePendingEntry(t *testing.T) {
 			m.CloseScopedPort(sp.LockID)
 		}
 	})
-	sp, _ := m.CreateScopedPort("lock-1", map[string]struct{}{"DEV1": {}})
+	sp, _ := m.CreateScopedPort("lock-1", map[string]struct{}{"DEV1": {}}, nil)
 
 	sp.Log.Record(&pb.LockLogEntry{Service: "shell:pending"})
 	waitFor(t, "a heartbeat reaches the fake", func() bool {
@@ -230,12 +230,12 @@ func TestScopedPortFallbackHeartbeatCarriesLog(t *testing.T) {
 	}
 	t.Cleanup(func() { conn.Close(); srv.Stop() })
 	r := &CommandRouter{orchClient: pb.NewOrchestratorClient(conn), apiKey: "key-1", proxyID: "host-a"}
-	r.StartSession("v1", 60, nil, nil)
+	r.StartSession("v1", 60, nil, nil, nil)
 	t.Cleanup(r.sess.stop)
 	waitFor(t, "fallback", r.sess.unaryFallback)
 
 	m := NewScopedPortManager(r, NewDeviceListTracker(r), 1) // 1s heartbeat
-	sp, err := m.CreateScopedPort("lock-1", map[string]struct{}{"DEV1": {}})
+	sp, err := m.CreateScopedPort("lock-1", map[string]struct{}{"DEV1": {}}, nil)
 	if err != nil {
 		t.Fatalf("CreateScopedPort: %v", err)
 	}
@@ -260,10 +260,10 @@ func TestScopedPortClosesOnLockExpiredFromStream(t *testing.T) {
 	client := startFakeOrchestrator(t, f)
 	r := &CommandRouter{orchClient: client, apiKey: "key-1", proxyID: "host-a"}
 	m := NewScopedPortManager(r, NewDeviceListTracker(r), 3600)
-	r.StartSession("v1", 3600, m.OnLockExpired, nil)
+	r.StartSession("v1", 3600, m.OnLockExpired, nil, nil)
 	t.Cleanup(r.sess.stop)
 	waitFor(t, "connected", r.sess.connected)
-	if _, err := m.CreateScopedPort("lock-1", map[string]struct{}{"DEV1": {}}); err != nil {
+	if _, err := m.CreateScopedPort("lock-1", map[string]struct{}{"DEV1": {}}, nil); err != nil {
 		t.Fatalf("CreateScopedPort: %v", err)
 	}
 
@@ -274,7 +274,7 @@ func TestScopedPortClosesOnLockExpiredFromStream(t *testing.T) {
 func TestScopedPortFlushLogsUnexpectedSendErrors(t *testing.T) {
 	f := newFakeSessionServer()
 	m, r := newManagerOnSession(t, f, 3600)
-	sp, err := m.CreateScopedPort("lock-1", map[string]struct{}{"DEV1": {}})
+	sp, err := m.CreateScopedPort("lock-1", map[string]struct{}{"DEV1": {}}, nil)
 	if err != nil {
 		t.Fatalf("CreateScopedPort: %v", err)
 	}

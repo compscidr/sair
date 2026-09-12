@@ -14,6 +14,10 @@ service Orchestrator {
   // reports, lock heartbeats and lock log entries; the orchestrator pushes
   // lock expiry back. Replaces the periodic unary calls for proxies that use it.
   rpc Session(stream ProxyMessage) returns (stream OrchestratorMessage) {}
+  // One relayed ADB connection between the proxy holding a lock (HOLDER) and the
+  // proxy that has the device (OWNER). Both call this outbound; the orchestrator
+  // splices the two calls that name the same tunnel_id.
+  rpc Tunnel(stream TunnelData) returns (stream TunnelData) {}
 }
 
 message ListDevicesRequest {
@@ -57,6 +61,11 @@ message AcquireLockRequest {
 message AcquireLockResponse {
   string lock_id = 1;
   repeated string serials = 2;
+  // Granted devices that live on another proxy (or another tenant): reach them
+  // through Tunnel rather than a local device source. Carries the owner's
+  // reported info so the holder can list them. Empty for proxies without a
+  // proxy_id and from orchestrators that predate the relay.
+  repeated DeviceInfo remote_devices = 3;
 }
 
 // One ADB request a client made on a scoped port while holding a lock, as
@@ -112,6 +121,7 @@ message ProxyMessage {
     ReportDevicesRequest devices = 2;   // full list, same semantics as the unary call
     LockLog lock_log = 3;
     LockHeartbeatRequest heartbeat = 4; // its log field is left empty on the stream
+    RelayFailed relay_failed = 5;
   }
 }
 
@@ -132,6 +142,7 @@ message OrchestratorMessage {
   oneof msg {
     OrchestratorWelcome welcome = 1;
     LockExpired lock_expired = 2;
+    RelayOpen relay_open = 3;
   }
 }
 
@@ -142,4 +153,55 @@ message OrchestratorWelcome {
 
 message LockExpired {
   string lock_id = 1;
+}
+
+// Tunnel payload: setup first from each side, then raw ADB bytes (the same
+// shape as devicesource.ForwardData, so the owner can pump without translating).
+//
+// half_close is a TCP-style "I'm done writing" signal for the *other* leg of
+// the tunnel. gRPC's own CloseSend only tells the orchestrator "no more from
+// me on this call" -- the orchestrator, splicing two independent Tunnel
+// calls, has no transport-level way to make the peer's own call observe that
+// without ending it outright, which would also cut off any reply still in
+// flight (e.g. a device finishing its output after stdin closes). Carrying
+// it as an explicit message lets the orchestrator forward it while keeping
+// both calls open for the reply.
+message TunnelData {
+  oneof payload {
+    TunnelSetup setup = 1;
+    bytes data = 2;
+    bool half_close = 3;
+    // orchestrator -> holder only: the owner joined, bytes may flow
+    bool accepted = 4;
+  }
+}
+
+message TunnelSetup {
+  string tunnel_id = 1;
+  TunnelSide side = 2;
+  // HOLDER only: what the ADB client asked for, so the owner opens the device
+  // with the same initial command. Empty for a plain transport.
+  string serial = 3;
+  string initial_command = 4;
+}
+
+enum TunnelSide {
+  TUNNEL_SIDE_UNSPECIFIED = 0;
+  TUNNEL_SIDE_HOLDER = 1; // has the lock and the ADB client
+  TUNNEL_SIDE_OWNER = 2;  // has the device
+}
+
+// Orchestrator -> owner proxy: open your half of tunnel_id for this device.
+message RelayOpen {
+  string tunnel_id = 1;
+  string serial = 2;          // as the owner knows it
+  string initial_command = 3; // forwarded from the holder's setup
+  string lock_id = 4;         // for logging
+}
+
+// Owner proxy -> orchestrator: could not open the device; the holder's ADB
+// client gets a FAIL with this text.
+message RelayFailed {
+  string tunnel_id = 1;
+  string error = 2;
 }

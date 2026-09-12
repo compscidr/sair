@@ -2,10 +2,12 @@ package proxy
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"sort"
 	"strings"
 
 	pb "github.com/compscidr/sair/proto/orchestrator"
@@ -20,8 +22,16 @@ type AdbConnection struct {
 	conn              net.Conn
 	commandRouter     *CommandRouter
 	deviceListTracker *DeviceListTracker
-	allowedSerials    map[string]struct{} // nil = all, empty = none
-	lockLog           *LockLog            // nil on the bare port: nothing to attribute requests to
+	allowedSerials    map[string]struct{}       // nil = all, empty = none
+	lockLog           *LockLog                  // nil on the bare port: nothing to attribute requests to
+	remoteDevices     map[string]*pb.DeviceInfo // granted devices reached through the relay; nil for none
+
+	// remoteTransportID returns a stable transport id for a remote serial,
+	// and remoteSerialByTransportID is its reverse (for host:transport-id:).
+	// Both set by the scoped port manager right after construction; nil
+	// elsewhere (no remote devices possible without them).
+	remoteTransportID         func(string) int
+	remoteSerialByTransportID func(int) string
 
 	keepAlive bool
 }
@@ -32,6 +42,7 @@ func NewAdbConnection(
 	deviceListTracker *DeviceListTracker,
 	allowedSerials map[string]struct{},
 	lockLog *LockLog,
+	remoteDevices map[string]*pb.DeviceInfo,
 ) *AdbConnection {
 	return &AdbConnection{
 		conn:              conn,
@@ -39,15 +50,40 @@ func NewAdbConnection(
 		deviceListTracker: deviceListTracker,
 		allowedSerials:    allowedSerials,
 		lockLog:           lockLog,
+		remoteDevices:     remoteDevices,
 	}
 }
 
 // tunnel relays the rest of the connection to the device, recording the
 // request into the lock's log when this is a scoped-port connection.
+//
+// A remote device (sourceAddr == "", present in remoteDevices) is reached
+// through the relay instead of the local device-source. RelayToDevice waits
+// for the orchestrator's accepted message before relaying any bytes, so
+// every error it returns before that point -- including errUnknownDevice --
+// comes back as a relayRefused, safe to report to the client as FAIL. An
+// error after accepted is plain: pumpStreams may already have relayed real
+// bytes, and writing FAIL into that stream would corrupt it.
 func (c *AdbConnection) tunnel(sourceAddr, serial string) error {
 	conn, obs := newTunnelObserver(c.lockLog, serial, c.conn)
 	if obs != nil {
 		defer obs.finish()
+	}
+	if sourceAddr == "" {
+		if _, ok := c.remoteDevices[serial]; ok {
+			err := c.commandRouter.RelayToDevice(serial, "", conn)
+			if err != nil {
+				var refused relayRefused
+				if errors.As(err, &refused) {
+					if werr := WriteFail(conn, err.Error()); werr != nil {
+						slog.Debug("write error", "remote", c.conn.RemoteAddr(), "error", werr)
+					}
+				} else {
+					slog.Debug("relay tunnel failed", "serial", serial, "error", err)
+				}
+			}
+			return err
+		}
 	}
 	return c.commandRouter.ForwardToDevice(sourceAddr, serial, "", conn)
 }
@@ -103,21 +139,47 @@ func (c *AdbConnection) minVisibleSdk() int32 {
 	return min
 }
 
+// getVisibleDevices returns every device this connection may see: the
+// tracker's local devices plus any remote (lock-granted, relayed) devices,
+// both filtered by allowedSerials. This is the single point that feeds
+// host:devices(-l), host:track-devices(-l), sdkOf/minVisibleSdk, and the
+// transport handlers' "found" checks, so merging remote devices here is what
+// makes all of them see them.
 func (c *AdbConnection) getVisibleDevices() []*pb.DeviceInfo {
 	all := c.deviceListTracker.GetDevices()
+	var devices []*pb.DeviceInfo
 	if c.allowedSerials == nil {
-		return all
-	}
-	if len(c.allowedSerials) == 0 {
-		return nil
-	}
-	var filtered []*pb.DeviceInfo
-	for _, d := range all {
-		if _, ok := c.allowedSerials[d.Serial]; ok {
-			filtered = append(filtered, d)
+		devices = append(devices, all...)
+		for _, d := range c.remoteDevices {
+			devices = append(devices, d)
+		}
+	} else if len(c.allowedSerials) > 0 {
+		for _, d := range all {
+			if _, ok := c.allowedSerials[d.Serial]; ok {
+				devices = append(devices, d)
+			}
+		}
+		for serial, d := range c.remoteDevices {
+			if _, ok := c.allowedSerials[serial]; ok {
+				devices = append(devices, d)
+			}
 		}
 	}
-	return filtered
+	sort.Slice(devices, func(i, j int) bool { return devices[i].Serial < devices[j].Serial })
+	return devices
+}
+
+// transportIDOf returns the transport id for a serial, whichever source it
+// comes from: the tracker for a local device, this port's remote assignment
+// for a relayed one.
+func (c *AdbConnection) transportIDOf(serial string) int {
+	if id := c.deviceListTracker.GetTransportID(serial); id != 0 {
+		return id
+	}
+	if c.remoteTransportID != nil {
+		return c.remoteTransportID(serial)
+	}
+	return 0
 }
 
 // writeOkay writes an OKAY response, logging any write errors.
@@ -182,7 +244,7 @@ func (c *AdbConnection) handleHostCommand(request string) {
 			model := strings.ReplaceAll(d.Model, " ", "_")
 			sb.WriteString(FormatDeviceLineLong(
 				d.Serial, model, model, model,
-				c.deviceListTracker.GetTransportID(d.Serial),
+				c.transportIDOf(d.Serial),
 			))
 		}
 		c.writeOkayWithPayload(sb.String())
@@ -198,7 +260,7 @@ func (c *AdbConnection) handleHostCommand(request string) {
 				model := strings.ReplaceAll(d.Model, " ", "_")
 				sb.WriteString(FormatDeviceLineLong(
 					d.Serial, model, model, model,
-					c.deviceListTracker.GetTransportID(d.Serial),
+					c.transportIDOf(d.Serial),
 				))
 			} else {
 				sb.WriteString(FormatDeviceLine(d.Serial))
@@ -271,6 +333,9 @@ func (c *AdbConnection) handleHostCommand(request string) {
 			return
 		}
 		serial := c.deviceListTracker.GetSerialByTransportID(transportID)
+		if serial == "" && c.remoteSerialByTransportID != nil {
+			serial = c.remoteSerialByTransportID(transportID)
+		}
 		if serial == "" {
 			c.writeFail(fmt.Sprintf("device not found for transport id %d", transportID))
 			return
@@ -332,14 +397,16 @@ func (c *AdbConnection) handleHostCommand(request string) {
 func (c *AdbConnection) handleTransportWithID(serial string) {
 	sourceAddr := c.deviceListTracker.GetSourceAddr(serial)
 	if sourceAddr == "" {
-		c.writeFail("no device-source registered for " + serial)
-		return
+		if _, ok := c.remoteDevices[serial]; !ok {
+			c.writeFail("no device-source registered for " + serial)
+			return
+		}
 	}
 
 	c.writeOkay()
 
 	// tport protocol: send transport ID as 8-byte little-endian after OKAY
-	transportID := int64(c.deviceListTracker.GetTransportID(serial))
+	transportID := int64(c.transportIDOf(serial))
 	buf := make([]byte, 8)
 	binary.LittleEndian.PutUint64(buf, uint64(transportID))
 	if _, err := c.conn.Write(buf); err != nil {
@@ -356,8 +423,10 @@ func (c *AdbConnection) handleTransportWithID(serial string) {
 func (c *AdbConnection) handleTransport(serial string) {
 	sourceAddr := c.deviceListTracker.GetSourceAddr(serial)
 	if sourceAddr == "" {
-		c.writeFail("no device-source registered for " + serial)
-		return
+		if _, ok := c.remoteDevices[serial]; !ok {
+			c.writeFail("no device-source registered for " + serial)
+			return
+		}
 	}
 
 	c.writeOkay()

@@ -150,6 +150,16 @@ func (s *sniffConn) feed(data []byte) {
 // BytesToClient is how many bytes the device side has sent back so far.
 func (s *sniffConn) BytesToClient() int64 { return s.bytesToClient.Load() }
 
+// CloseWrite half-closes the wrapped socket so the relay can forward the
+// device's end to the client (sniffConn embeds the net.Conn interface, which
+// hides the *net.TCPConn's CloseWrite).
+func (s *sniffConn) CloseWrite() error {
+	if cw, ok := s.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
+}
+
 // tunnelObserver records one device session into a LockLog: created before
 // the tunnel starts, finished when it ends.
 type tunnelObserver struct {
