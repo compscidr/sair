@@ -83,12 +83,18 @@ func (l *LockLog) Record(e *pb.LockLogEntry) {
 // maxLockLogDrainBytes of output; anything past the budget waits for the
 // next drain. Always returns at least one pending entry when there is one.
 func (l *LockLog) Drain() []*pb.LockLogEntry {
+	return l.drain(maxLockLogDrainBytes, true)
+}
+
+// drain takes up to budget bytes of output from pending, then (if live) from
+// the open tunnels. Live output is taken once per call, so a tunnel that
+// keeps producing cannot keep a caller looping.
+func (l *LockLog) drain(budget int, live bool) []*pb.LockLogEntry {
 	if l == nil {
 		return nil
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	budget := maxLockLogDrainBytes
 	var out []*pb.LockLogEntry
 	n := 0
 	for ; n < len(l.pending); n++ {
@@ -106,11 +112,11 @@ func (l *LockLog) Drain() []*pb.LockLogEntry {
 		l.truncated = false
 	}
 	for o := range l.open {
-		if budget <= 0 {
+		if !live || budget <= 0 {
 			break
 		}
 		if piece := o.take(budget, false); piece != "" {
-			out = append(out, &pb.LockLogEntry{RequestId: o.entry.RequestId, Output: piece})
+			out = append(out, &pb.LockLogEntry{RequestId: o.id, Output: piece})
 			budget -= len(piece)
 		}
 	}
@@ -118,16 +124,22 @@ func (l *LockLog) Drain() []*pb.LockLogEntry {
 }
 
 // DrainAll returns everything, for the release call, which is one unary
-// message: at most maxLockLogPendingBytes plus what open tunnels hold.
+// message: all of pending (at most maxLockLogPendingBytes), then what each
+// open tunnel holds right now (at most maxUnflushedOutput each). Tunnels
+// still open afterwards keep going; their later output has nowhere to go.
 func (l *LockLog) DrainAll() []*pb.LockLogEntry {
+	if l == nil {
+		return nil
+	}
 	var all []*pb.LockLogEntry
 	for {
-		batch := l.Drain()
+		batch := l.drain(maxLockLogDrainBytes, false)
 		if len(batch) == 0 {
-			return all
+			break
 		}
 		all = append(all, batch...)
 	}
+	return append(all, l.drain(len(l.open)*maxUnflushedOutput, true)...)
 }
 
 // Requeue puts drained entries back at the front after a failed send.
@@ -143,15 +155,18 @@ func (l *LockLog) Requeue(entries []*pb.LockLogEntry) {
 	}
 }
 
-func (l *LockLog) register(o *tunnelObserver) uint64 {
+// register gives o its request id and starts draining its output live. The
+// id is set under the lock before o is visible to drain, so no output piece
+// can go out with request id 0.
+func (l *LockLog) register(o *tunnelObserver) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.open == nil {
 		l.open = map[*tunnelObserver]struct{}{}
 	}
-	l.open[o] = struct{}{}
 	l.nextID++
-	return l.nextID
+	o.id = l.nextID
+	l.open[o] = struct{}{}
 }
 
 func (l *LockLog) unregister(o *tunnelObserver) {
@@ -254,6 +269,7 @@ func (s *sniffConn) CloseWrite() error {
 type tunnelObserver struct {
 	log     *LockLog
 	serial  string
+	id      uint64 // request id; written by register under log.mu, read by drain under it
 	entry   *pb.LockLogEntry
 	started time.Time
 	conn    *sniffConn
@@ -278,13 +294,13 @@ func newTunnelObserver(log *LockLog, serial string, conn net.Conn) (net.Conn, *t
 	o := &tunnelObserver{log: log, serial: serial}
 	o.conn = newSniffConn(conn, func(service string) {
 		o.started = time.Now()
-		o.entry = &pb.LockLogEntry{TimestampMs: o.started.UnixMilli(), Serial: serial, Service: service}
 		o.mu.Lock()
 		o.capture = strings.HasPrefix(service, "shell")
 		o.v2 = strings.HasPrefix(service, "shell,v2")
 		o.mu.Unlock()
-		o.entry.RequestId = log.register(o)
-		log.Record(&pb.LockLogEntry{TimestampMs: o.entry.TimestampMs, Serial: serial, Service: service, RequestId: o.entry.RequestId, Open: true})
+		log.register(o)
+		o.entry = &pb.LockLogEntry{TimestampMs: o.started.UnixMilli(), Serial: serial, Service: service, RequestId: o.id}
+		log.Record(&pb.LockLogEntry{TimestampMs: o.entry.TimestampMs, Serial: serial, Service: service, RequestId: o.id, Open: true})
 	})
 	o.conn.onReply = o.observe
 	return o.conn, o
@@ -401,7 +417,7 @@ func (o *tunnelObserver) finish() {
 		if piece == "" {
 			break
 		}
-		o.log.Record(&pb.LockLogEntry{RequestId: o.entry.RequestId, Output: piece})
+		o.log.Record(&pb.LockLogEntry{RequestId: o.id, Output: piece})
 	}
 	o.entry.DurationMs = time.Since(o.started).Milliseconds()
 	o.entry.BytesToClient = o.conn.BytesToClient()

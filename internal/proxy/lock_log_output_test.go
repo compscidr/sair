@@ -5,6 +5,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	pb "github.com/compscidr/sair/proto/orchestrator"
 )
@@ -192,4 +193,32 @@ func TestPendingOutputIsCappedByBytes(t *testing.T) {
 	if log.Drain() != nil {
 		t.Error("nothing left after DrainAll")
 	}
+}
+
+func TestDrainAllReturnsWhileATunnelKeepsProducing(t *testing.T) {
+	log := &LockLog{}
+	device, _ := request(t, log, "shell:logcat")
+	device.Write([]byte("OKAYstill going\n"))
+	stop := make(chan struct{})
+	go func() { // keeps the tunnel producing in the background
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				device.Write([]byte("more\n"))
+			}
+		}
+	}()
+	done := make(chan []*pb.LockLogEntry, 1)
+	go func() { done <- log.DrainAll() }()
+	select {
+	case all := <-done:
+		if !strings.HasPrefix(outputs(all), "still going\n") || all[0].RequestId == 0 {
+			t.Errorf("DrainAll takes what the open tunnel holds under its request id, got %+v", all)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("DrainAll must return while a tunnel keeps producing")
+	}
+	close(stop)
 }
