@@ -157,10 +157,20 @@ message LockExpired {
 
 // Tunnel payload: setup first from each side, then raw ADB bytes (the same
 // shape as devicesource.ForwardData, so the owner can pump without translating).
+//
+// half_close is a TCP-style "I'm done writing" signal for the *other* leg of
+// the tunnel. gRPC's own CloseSend only tells the orchestrator "no more from
+// me on this call" -- the orchestrator, splicing two independent Tunnel
+// calls, has no transport-level way to make the peer's own call observe that
+// without ending it outright, which would also cut off any reply still in
+// flight (e.g. a device finishing its output after stdin closes). Carrying
+// it as an explicit message lets the orchestrator forward it while keeping
+// both calls open for the reply.
 message TunnelData {
   oneof payload {
     TunnelSetup setup = 1;
     bytes data = 2;
+    bool half_close = 3;
   }
 }
 

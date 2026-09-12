@@ -115,6 +115,14 @@ func (s *session) send(msg *pb.ProxyMessage) error {
 	return err
 }
 
+// sendRelayFailed tells the orchestrator this proxy could not open a device for
+// a tunnel, so the holder's ADB client gets a FAIL instead of a hang. Best effort.
+func (s *session) sendRelayFailed(tunnelID, msg string) {
+	if err := s.send(&pb.ProxyMessage{Msg: &pb.ProxyMessage_RelayFailed{RelayFailed: &pb.RelayFailed{TunnelId: tunnelID, Error: msg}}}); err != nil {
+		slog.Debug("relay_failed not sent", "tunnelId", tunnelID, "error", err)
+	}
+}
+
 // isStreamDead reports whether a Send error means the stream itself is gone
 // (as opposed to a problem with this one message). grpc-go returns io.EOF from
 // Send once the stream has terminated and the real status is only on Recv.

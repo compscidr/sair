@@ -38,6 +38,12 @@ type CommandRouter struct {
 	// hook used to pin a send mid-flight and exercise races deterministically.
 	beforeSendLockLog func()
 
+	// dsDialer overrides how device-source connections are dialed (tests use bufconn).
+	dsDialer func(ctx context.Context, addr string) (net.Conn, error)
+	// ResolveSource maps a local serial to its device-source address ("" if unknown).
+	// Set by main to the device tracker's GetSourceAddr; exported for that wiring.
+	ResolveSource func(serial string) string
+
 	// Device-source connections, created lazily when sources register
 	dsMu    sync.Mutex
 	dsConns map[string]*grpc.ClientConn          // sourceAddr -> conn
@@ -84,7 +90,7 @@ func (r *CommandRouter) getOrCreateDSClient(sourceAddr string) (dspb.DeviceSourc
 	}
 
 	slog.Info("creating gRPC connection to device-source", "addr", sourceAddr)
-	conn, err := grpc.NewClient(sourceAddr,
+	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(64*1024*1024),
@@ -92,9 +98,20 @@ func (r *CommandRouter) getOrCreateDSClient(sourceAddr string) (dspb.DeviceSourc
 		),
 		grpc.WithInitialWindowSize(16*1024*1024),
 		grpc.WithInitialConnWindowSize(16*1024*1024),
-	)
+	}
+	if r.dsDialer != nil {
+		opts = append(opts, grpc.WithContextDialer(r.dsDialer))
+	}
+	conn, err := grpc.NewClient(sourceAddr, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("connect to device-source %s: %w", sourceAddr, err)
+	}
+
+	if r.dsConns == nil {
+		r.dsConns = make(map[string]*grpc.ClientConn)
+	}
+	if r.dsClients == nil {
+		r.dsClients = make(map[string]dspb.DeviceSourceClient)
 	}
 
 	client := dspb.NewDeviceSourceClient(conn)

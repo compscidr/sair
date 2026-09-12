@@ -136,10 +136,20 @@ func (f *fakeSessionServer) attemptCount() int {
 // startFakeOrchestrator serves the fake over bufconn and returns a client to it.
 func startFakeOrchestrator(t *testing.T, f *fakeSessionServer) pb.OrchestratorClient {
 	t.Helper()
+	return startFakeOrchestratorFrom(t, f)
+}
+
+// startFakeOrchestratorFrom serves any OrchestratorServer implementation over
+// bufconn and returns a client to it. Used directly by tests whose fake
+// embeds a *fakeSessionServer by value but implements other RPCs (e.g.
+// Tunnel) on the outer type, which startFakeOrchestrator's registration must
+// see or those RPCs answer Unimplemented.
+func startFakeOrchestratorFrom(t *testing.T, srv pb.OrchestratorServer) pb.OrchestratorClient {
+	t.Helper()
 	lis := bufconn.Listen(1 << 20)
-	srv := grpc.NewServer()
-	pb.RegisterOrchestratorServer(srv, f)
-	go srv.Serve(lis)
+	s := grpc.NewServer()
+	pb.RegisterOrchestratorServer(s, srv)
+	go s.Serve(lis)
 	conn, err := grpc.NewClient("passthrough:///bufconn",
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
@@ -147,7 +157,7 @@ func startFakeOrchestrator(t *testing.T, f *fakeSessionServer) pb.OrchestratorCl
 	if err != nil {
 		t.Fatalf("dial bufconn: %v", err)
 	}
-	t.Cleanup(func() { conn.Close(); srv.Stop() })
+	t.Cleanup(func() { conn.Close(); s.Stop() })
 	return pb.NewOrchestratorClient(conn)
 }
 
