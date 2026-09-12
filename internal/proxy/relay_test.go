@@ -202,6 +202,11 @@ type fakeDeviceSource struct {
 	// failAfterSetup, when set, makes ForwardToDevice return this status
 	// right after replying OKAY, simulating the device disappearing mid-use.
 	failAfterSetup *status.Status
+	// endsFirst, when set, makes ForwardToDevice return nil right after
+	// sending OKAY -- the device ending its side cleanly on its own, without
+	// ever waiting for the client to half-close first (e.g. `adb shell <cmd>`
+	// or connectedCheck, where the command's own output is the end).
+	endsFirst bool
 }
 
 func (d *fakeDeviceSource) ForwardToDevice(stream grpc.BidiStreamingServer[dspb.ForwardData, dspb.ForwardData]) error {
@@ -217,6 +222,9 @@ func (d *fakeDeviceSource) ForwardToDevice(stream grpc.BidiStreamingServer[dspb.
 	}
 	if d.failAfterSetup != nil {
 		return d.failAfterSetup.Err()
+	}
+	if d.endsFirst {
+		return nil
 	}
 	for {
 		m, err := stream.Recv()
@@ -310,6 +318,7 @@ func TestRelayToDeviceRoundTripsThroughOrchestratorAndForwardsHalfClose(t *testi
 	})
 
 	client, server := tcpPair(t)
+	client.SetReadDeadline(time.Now().Add(3 * time.Second))
 	done := make(chan error, 1)
 	go func() { done <- r.RelayToDevice("REMOTE1", "shell:", server) }()
 
@@ -344,6 +353,67 @@ func TestRelayToDeviceRoundTripsThroughOrchestratorAndForwardsHalfClose(t *testi
 	defer ds.mu.Unlock()
 	if len(ds.setups) != 1 || ds.setups[0].Serial != "REMOTE1" || ds.setups[0].InitialCommand != "shell:" {
 		t.Errorf("owner opened the device with %+v", ds.setups)
+	}
+}
+
+// TestAdbConnectionTunnelForwardsDeviceHalfCloseOnAScopedPort covers a scoped
+// port (non-nil LockLog), where AdbConnection.tunnel wraps the client conn in
+// a *sniffConn before handing it to RelayToDevice. If sniffConn does not
+// forward CloseWrite, tcpStream.CloseSend's type assertion silently fails and
+// the client never sees the device's half-close: it hangs waiting for EOF
+// forever instead of finding out the device (which here ends its side right
+// after OKAY, like `adb shell <cmd>` or connectedCheck) is already done.
+func TestAdbConnectionTunnelForwardsDeviceHalfCloseOnAScopedPort(t *testing.T) {
+	f := newFakeRelayOrchestrator()
+	ds := &fakeDeviceSource{endsFirst: true}
+	r := relayRouter(t, f, ds, map[string]string{"REMOTE1": "passthrough:///bufconn-ds"})
+
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		waitFor(t, "holder setup", func() bool { f.mu.Lock(); defer f.mu.Unlock(); return len(f.setups) >= 1 })
+		f.mu.Lock()
+		s := f.setups[0]
+		f.mu.Unlock()
+		r.ServeRelay(&pb.RelayOpen{TunnelId: s.TunnelId, Serial: s.Serial, InitialCommand: s.InitialCommand, LockId: "l1"})
+	}()
+	t.Cleanup(func() {
+		select {
+		case <-served:
+		case <-time.After(3 * time.Second):
+			t.Error("ServeRelay goroutine did not finish")
+		}
+	})
+
+	client, server := tcpPair(t)
+	client.SetReadDeadline(time.Now().Add(3 * time.Second))
+
+	c := NewAdbConnection(server, r, nil, nil, &LockLog{}, map[string]*pb.DeviceInfo{"REMOTE1": {Serial: "REMOTE1"}})
+	done := make(chan error, 1)
+	go func() { done <- c.tunnel("", "REMOTE1") }()
+
+	// Write nothing: just read until EOF. A timeout here (instead of a clean
+	// EOF) means CloseWrite never reached the client -- the bug this test
+	// guards against.
+	got, err := io.ReadAll(client)
+	if err != nil {
+		t.Fatalf("client read failed (want a clean EOF once the device ended first), got err=%v data=%q", err, got)
+	}
+	if string(got) != "OKAY" {
+		t.Fatalf("expected to read OKAY before EOF, got %q", got)
+	}
+	// A real adb client closes the whole connection once its read side sees
+	// EOF; do the same so the holder's other direction (reading the client's
+	// now-absent request) also unblocks and tunnel can return.
+	client.Close()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("tunnel returned %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("tunnel did not return within 3s")
 	}
 }
 

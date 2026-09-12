@@ -145,12 +145,16 @@ func (r *CommandRouter) RelayToDevice(serial, initialCommand string, conn net.Co
 	slog.Debug("relay: holder tunnel open", "tunnelId", id, "serial", serial)
 	err = pumpStreams(tcpStream{conn}, closeSignalStream{tunnelStream{stream}})
 	// No graceful CloseSend before cancel here, unlike ServeRelay: the
-	// holder's own half_close is always causally before the owner's
-	// half_close that pumpStreams waited on to get here, so its delivery is
-	// already implied -- a CloseSend this close to cancel wouldn't reliably
-	// add anything (CloseSend only enqueues, cancel can drop the queued
-	// frame moments later) and, on an error return, would risk a Send racing
-	// the still-running copyDir goroutine (see the drain comment below).
+	// holder's own half_close can be dropped by this cancel when the device
+	// ended first (pumpStreams returned because the owner leg reached EOF, not
+	// because the holder's CloseSend was ever sent/delivered). That is safe
+	// only because the orchestrator ends the peer leg (wrapped as Aborted) the
+	// moment either leg's splice ends, and the owner tolerates seeing its own
+	// leg end that way instead of via a half_close it was waiting on. A
+	// CloseSend this close to cancel wouldn't reliably add anything anyway
+	// (CloseSend only enqueues, cancel can drop the queued frame moments
+	// later) and, on an error return, would risk a Send racing the
+	// still-running copyDir goroutine (see the drain comment below).
 	cancel()
 	conn.SetReadDeadline(time.Now())
 	if err == nil || errors.Is(err, io.EOF) {
