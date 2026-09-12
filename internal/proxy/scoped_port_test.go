@@ -230,7 +230,7 @@ func TestScopedPortFallbackHeartbeatCarriesLog(t *testing.T) {
 	}
 	t.Cleanup(func() { conn.Close(); srv.Stop() })
 	r := &CommandRouter{orchClient: pb.NewOrchestratorClient(conn), apiKey: "key-1", proxyID: "host-a"}
-	r.StartSession("v1", 60, nil, nil)
+	r.StartSession("v1", 60, nil, nil, nil)
 	t.Cleanup(r.sess.stop)
 	waitFor(t, "fallback", r.sess.unaryFallback)
 
@@ -260,7 +260,7 @@ func TestScopedPortClosesOnLockExpiredFromStream(t *testing.T) {
 	client := startFakeOrchestrator(t, f)
 	r := &CommandRouter{orchClient: client, apiKey: "key-1", proxyID: "host-a"}
 	m := NewScopedPortManager(r, NewDeviceListTracker(r), 3600)
-	r.StartSession("v1", 3600, m.OnLockExpired, nil)
+	r.StartSession("v1", 3600, m.OnLockExpired, nil, nil)
 	t.Cleanup(r.sess.stop)
 	waitFor(t, "connected", r.sess.connected)
 	if _, err := m.CreateScopedPort("lock-1", map[string]struct{}{"DEV1": {}}, nil); err != nil {

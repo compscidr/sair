@@ -140,6 +140,8 @@ The proxy exposes two ports:
 
 The proxy keeps one long-lived stream open to the orchestrator carrying its version, device reports, lock heartbeats and the ADB log of running jobs (flushed within a second). Against an orchestrator that predates the stream it falls back to the periodic unary calls automatically.
 
+A lock can include devices connected to another of your proxies (or shared with you by another account). The orchestrator relays those ADB connections between the two proxies, so `adb` on the runner sees them like local devices. Only outbound connections are used, so proxies behind NAT work; the orchestrator is in the data path for remote devices only.
+
 ### Tools
 
 On GitHub Actions, `uses: compscidr/sair@v0.0.21` (or any later release tag)

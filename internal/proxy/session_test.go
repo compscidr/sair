@@ -177,7 +177,7 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 func TestSessionSendsHelloFirstWithAuth(t *testing.T) {
 	f := newFakeSessionServer()
 	client := startFakeOrchestrator(t, f)
-	s := newSession(client, "key-1", "host-a", "v9.9.9", 60, nil, nil)
+	s := newSession(client, "key-1", "host-a", "v9.9.9", 60, nil, nil, nil)
 	s.start()
 	defer s.stop()
 
@@ -204,7 +204,7 @@ func TestSessionReconnectsAndResendsHello(t *testing.T) {
 	client := startFakeOrchestrator(t, f)
 	connections := 0
 	var mu sync.Mutex
-	s := newSession(client, "key-1", "host-a", "v1", 60, nil, func() { mu.Lock(); connections++; mu.Unlock() })
+	s := newSession(client, "key-1", "host-a", "v1", 60, nil, func() { mu.Lock(); connections++; mu.Unlock() }, nil)
 	s.backoffMin, s.backoffMax = 10*time.Millisecond, 20*time.Millisecond
 	s.start()
 	defer s.stop()
@@ -229,7 +229,7 @@ func TestSessionFallsBackToUnaryOnUnimplemented(t *testing.T) {
 	f := newFakeSessionServer()
 	f.unimplement = true
 	client := startFakeOrchestrator(t, f)
-	s := newSession(client, "key-1", "host-a", "v1", 60, nil, nil)
+	s := newSession(client, "key-1", "host-a", "v1", 60, nil, nil, nil)
 	s.backoffMin, s.backoffMax = 10*time.Millisecond, 20*time.Millisecond
 	s.start()
 	defer s.stop()
@@ -260,7 +260,7 @@ func TestSessionBackoffResetsAfterGoodConnection(t *testing.T) {
 	f := newFakeSessionServer()
 	f.refuseFirst = 4
 	client := startFakeOrchestrator(t, f)
-	s := newSession(client, "key-1", "host-a", "v1", 60, nil, nil)
+	s := newSession(client, "key-1", "host-a", "v1", 60, nil, nil, nil)
 	s.backoffMin, s.backoffMax = 20*time.Millisecond, 400*time.Millisecond
 	s.start()
 	defer s.stop()
@@ -281,7 +281,7 @@ func TestSessionDispatchesLockExpired(t *testing.T) {
 	client := startFakeOrchestrator(t, f)
 	var got []string
 	var mu sync.Mutex
-	s := newSession(client, "key-1", "host-a", "v1", 60, func(id string) { mu.Lock(); got = append(got, id); mu.Unlock() }, nil)
+	s := newSession(client, "key-1", "host-a", "v1", 60, func(id string) { mu.Lock(); got = append(got, id); mu.Unlock() }, nil, nil)
 	s.start()
 	defer s.stop()
 	waitFor(t, "connected", s.connected)
@@ -303,7 +303,7 @@ func TestSessionRecvLoopIsNotBlockedByOnExpired(t *testing.T) {
 		if id == "slow" {
 			<-release // a callback that blocks (e.g. CloseScopedPort waiting on a stuck send)
 		}
-	}, nil)
+	}, nil, nil)
 	s.start()
 	defer s.stop()
 	defer close(release)
@@ -334,7 +334,7 @@ func TestSessionSendOnDyingStreamReportsSessionDown(t *testing.T) {
 	// callers requeue quietly, and the dead stream is dropped so the next send does
 	// not touch it again.
 	for _, cause := range []error{io.EOF, status.Error(codes.Unavailable, "transport closing"), status.Error(codes.Canceled, "ctx")} {
-		s := newSession(nil, "k", "host-a", "v1", 60, nil, nil)
+		s := newSession(nil, "k", "host-a", "v1", 60, nil, nil, nil)
 		s.stream = stubErrStream{err: cause}
 		err := s.send(&pb.ProxyMessage{})
 		if !errors.Is(err, errSessionDown) {
@@ -373,7 +373,7 @@ func (stubEOFClient) Session(ctx context.Context, opts ...grpc.CallOption) (grpc
 }
 
 func TestSessionFallbackWhenHelloSendSeesEOF(t *testing.T) {
-	s := newSession(stubEOFClient{}, "key-1", "host-a", "v1", 60, nil, nil)
+	s := newSession(stubEOFClient{}, "key-1", "host-a", "v1", 60, nil, nil, nil)
 
 	if _, err := s.serveOnce(context.Background()); status.Code(err) != codes.Unimplemented {
 		t.Fatalf("serveOnce error = %v, want status code Unimplemented", err)
@@ -387,7 +387,7 @@ func TestSessionFallbackWhenHelloSendSeesEOF(t *testing.T) {
 func TestSessionSendReturnsErrorWhenDown(t *testing.T) {
 	f := newFakeSessionServer()
 	client := startFakeOrchestrator(t, f)
-	s := newSession(client, "key-1", "host-a", "v1", 60, nil, nil)
+	s := newSession(client, "key-1", "host-a", "v1", 60, nil, nil, nil)
 	// not started
 	if err := s.send(&pb.ProxyMessage{}); err != errSessionDown {
 		t.Errorf("expected errSessionDown, got %v", err)
@@ -399,7 +399,7 @@ func newRouterWithSession(t *testing.T, f *fakeSessionServer) *CommandRouter {
 	t.Helper()
 	client := startFakeOrchestrator(t, f)
 	r := &CommandRouter{orchClient: client, apiKey: "key-1", proxyID: "host-a"}
-	r.StartSession("v1", 60, nil, nil)
+	r.StartSession("v1", 60, nil, nil, nil)
 	t.Cleanup(r.sess.stop)
 	if !f.unimplement {
 		waitFor(t, "connected", r.sess.connected)
@@ -516,7 +516,7 @@ func TestRouterUsesUnaryInFallbackMode(t *testing.T) {
 	}
 	t.Cleanup(func() { conn.Close(); srv.Stop() })
 	r := &CommandRouter{orchClient: pb.NewOrchestratorClient(conn), apiKey: "key-1", proxyID: "host-a"}
-	r.StartSession("v1", 60, nil, nil)
+	r.StartSession("v1", 60, nil, nil, nil)
 	t.Cleanup(r.sess.stop)
 	waitFor(t, "fallback", r.sess.unaryFallback)
 
@@ -555,13 +555,36 @@ func TestSessionHelloCarriesConfiguredHeartbeatInterval(t *testing.T) {
 	f := newFakeSessionServer()
 	client := startFakeOrchestrator(t, f)
 	r := &CommandRouter{orchClient: client, apiKey: "key-1", proxyID: "host-a"}
-	r.StartSession("v1", 45, nil, nil)
+	r.StartSession("v1", 45, nil, nil, nil)
 	t.Cleanup(r.sess.stop)
 	waitFor(t, "hello", func() bool { msgs, _ := f.snapshot(); return len(msgs) >= 1 })
 	msgs, _ := f.snapshot()
 	if got := msgs[0].GetHello().GetLockHeartbeatIntervalS(); got != 45 {
 		t.Errorf("hello heartbeat interval = %d, want 45", got)
 	}
+}
+
+func TestSessionDispatchesRelayOpenOffTheRecvLoop(t *testing.T) {
+	f := newFakeSessionServer()
+	client := startFakeOrchestrator(t, f)
+	release := make(chan struct{})
+	var got []string
+	var mu sync.Mutex
+	s := newSession(client, "key-1", "host-a", "v1", 60, nil, nil, func(o *pb.RelayOpen) {
+		mu.Lock()
+		got = append(got, o.TunnelId)
+		mu.Unlock()
+		if o.TunnelId == "slow" {
+			<-release
+		}
+	})
+	s.start()
+	defer s.stop()
+	defer close(release)
+	waitFor(t, "connected", s.connected)
+	f.push <- &pb.OrchestratorMessage{Msg: &pb.OrchestratorMessage_RelayOpen{RelayOpen: &pb.RelayOpen{TunnelId: "slow", Serial: "X"}}}
+	f.push <- &pb.OrchestratorMessage{Msg: &pb.OrchestratorMessage_RelayOpen{RelayOpen: &pb.RelayOpen{TunnelId: "next", Serial: "Y"}}}
+	waitFor(t, "second relay_open delivered while the first is still serving", func() bool { mu.Lock(); defer mu.Unlock(); return len(got) == 2 })
 }
 
 func TestDeviceTrackerReportNowSendsCurrentList(t *testing.T) {

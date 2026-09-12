@@ -253,7 +253,7 @@ func relayRouter(t *testing.T, f *fakeRelayOrchestrator, ds *fakeDeviceSource, l
 	t.Helper()
 	client := startFakeOrchestratorFrom(t, f) // registers the outer fake, so Tunnel is served
 	r := &CommandRouter{orchClient: client, apiKey: "key-1", proxyID: "host-a"}
-	r.StartSession("v1", 60, nil, nil)
+	r.StartSession("v1", 60, nil, nil, nil)
 	t.Cleanup(r.sess.stop)
 	waitFor(t, "connected", r.sess.connected)
 	_, dial := startFakeDeviceSource(t, ds)

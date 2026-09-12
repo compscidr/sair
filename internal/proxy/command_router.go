@@ -346,9 +346,10 @@ func (r *CommandRouter) SendLockLog(lockID string, entries []*pb.LockLogEntry) e
 
 // StartSession opens the long-lived stream to the orchestrator. onExpired is
 // called when the orchestrator reports a lock gone; onConnected after every
-// (re)connect so the caller can resend the device list.
-func (r *CommandRouter) StartSession(version string, heartbeatIntervalS int64, onExpired func(lockID string), onConnected func()) {
-	r.sess = newSession(r.orchClient, r.apiKey, r.proxyID, version, heartbeatIntervalS, onExpired, onConnected)
+// (re)connect so the caller can resend the device list; onRelayOpen when the
+// orchestrator wants this proxy to serve a relayed connection.
+func (r *CommandRouter) StartSession(version string, heartbeatIntervalS int64, onExpired func(lockID string), onConnected func(), onRelayOpen func(*pb.RelayOpen)) {
+	r.sess = newSession(r.orchClient, r.apiKey, r.proxyID, version, heartbeatIntervalS, onExpired, onConnected, onRelayOpen)
 	r.sess.start()
 }
 

@@ -27,9 +27,10 @@ type session struct {
 	apiKey             string
 	proxyID            string
 	version            string
-	heartbeatIntervalS int64               // reported in hello; informational for the orchestrator
-	onExpired          func(lockID string) // orchestrator says a lock is gone
-	onConnected        func()              // a (re)connect completed the hello; resend state
+	heartbeatIntervalS int64                 // reported in hello; informational for the orchestrator
+	onExpired          func(lockID string)   // orchestrator says a lock is gone
+	onConnected        func()                // a (re)connect completed the hello; resend state
+	onRelayOpen        func(o *pb.RelayOpen) // orchestrator wants this proxy to serve a relayed connection
 
 	backoffMin, backoffMax time.Duration
 
@@ -45,10 +46,10 @@ type session struct {
 	sendMu sync.Mutex
 }
 
-func newSession(client pb.OrchestratorClient, apiKey, proxyID, version string, heartbeatIntervalS int64, onExpired func(string), onConnected func()) *session {
+func newSession(client pb.OrchestratorClient, apiKey, proxyID, version string, heartbeatIntervalS int64, onExpired func(string), onConnected func(), onRelayOpen func(*pb.RelayOpen)) *session {
 	return &session{
 		client: client, apiKey: apiKey, proxyID: proxyID, version: version, heartbeatIntervalS: heartbeatIntervalS,
-		onExpired: onExpired, onConnected: onConnected,
+		onExpired: onExpired, onConnected: onConnected, onRelayOpen: onRelayOpen,
 		backoffMin: time.Second, backoffMax: 30 * time.Second,
 	}
 }
@@ -233,6 +234,9 @@ func (s *session) serveOnce(ctx context.Context) (connected bool, err error) {
 			// Off the Recv loop: closing a scoped port waits for its keepalive
 			// goroutine, which may itself be inside a stalled Send.
 			go s.onExpired(e.LockId)
+		}
+		if o := msg.GetRelayOpen(); o != nil && s.onRelayOpen != nil {
+			go s.onRelayOpen(o) // serving a relay blocks for the connection's lifetime
 		}
 	}
 }
