@@ -31,8 +31,10 @@ type ScopedPort struct {
 	// serial. nil for none.
 	RemoteDevices map[string]*pb.DeviceInfo
 	// remoteTransport assigns stable transport ids to RemoteDevices, disjoint
-	// from the tracker's ids (which start at 1).
+	// from the tracker's ids (which start at 1). remoteBySerial is its
+	// reverse, for host:transport-id:.
 	remoteTransport sync.Map // serial -> int
+	remoteBySerial  sync.Map // int -> serial
 	remoteNext      atomic.Int32
 }
 
@@ -46,8 +48,20 @@ func (sp *ScopedPort) remoteTransportID(serial string) int {
 		return v.(int)
 	}
 	id := 1_000_000 + int(sp.remoteNext.Add(1))
-	v, _ := sp.remoteTransport.LoadOrStore(serial, id)
+	v, loaded := sp.remoteTransport.LoadOrStore(serial, id)
+	if !loaded {
+		sp.remoteBySerial.Store(id, serial)
+	}
 	return v.(int)
+}
+
+// remoteSerialByTransportID is the reverse of remoteTransportID, for
+// host:transport-id: on a remote device's id. Returns "" if unknown.
+func (sp *ScopedPort) remoteSerialByTransportID(id int) string {
+	if v, ok := sp.remoteBySerial.Load(id); ok {
+		return v.(string)
+	}
+	return ""
 }
 
 // ScopedPortManager manages scoped ADB listener ports for per-runner device isolation.
@@ -243,6 +257,7 @@ func (m *ScopedPortManager) runAcceptLoop(sp *ScopedPort) {
 		}
 		adbConn := NewAdbConnection(conn, m.commandRouter, m.deviceListTracker, sp.Serials, sp.Log, sp.RemoteDevices)
 		adbConn.remoteTransportID = sp.remoteTransportID
+		adbConn.remoteSerialByTransportID = sp.remoteSerialByTransportID
 		go adbConn.Handle()
 	}
 }

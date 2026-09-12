@@ -26,10 +26,12 @@ type AdbConnection struct {
 	lockLog           *LockLog                  // nil on the bare port: nothing to attribute requests to
 	remoteDevices     map[string]*pb.DeviceInfo // granted devices reached through the relay; nil for none
 
-	// remoteTransportID returns a stable transport id for a remote serial.
-	// Set by the scoped port manager right after construction; nil elsewhere
-	// (no remote devices possible without it).
-	remoteTransportID func(string) int
+	// remoteTransportID returns a stable transport id for a remote serial,
+	// and remoteSerialByTransportID is its reverse (for host:transport-id:).
+	// Both set by the scoped port manager right after construction; nil
+	// elsewhere (no remote devices possible without them).
+	remoteTransportID         func(string) int
+	remoteSerialByTransportID func(int) string
 
 	keepAlive bool
 }
@@ -331,6 +333,9 @@ func (c *AdbConnection) handleHostCommand(request string) {
 			return
 		}
 		serial := c.deviceListTracker.GetSerialByTransportID(transportID)
+		if serial == "" && c.remoteSerialByTransportID != nil {
+			serial = c.remoteSerialByTransportID(transportID)
+		}
 		if serial == "" {
 			c.writeFail(fmt.Sprintf("device not found for transport id %d", transportID))
 			return

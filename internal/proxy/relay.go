@@ -27,17 +27,12 @@ var errUnknownDevice = errors.New("unknown device")
 // safely write it back to the ADB client as FAIL. An error that isn't a
 // relayRefused may have happened after bytes already flowed, so writing FAIL
 // for it would corrupt the stream.
-type relayRefused struct{ msg string }
+type relayRefused struct{ err error }
 
-func (e relayRefused) Error() string { return e.msg }
+func (e relayRefused) Error() string { return e.err.Error() }
 
 // Unwrap lets errors.Is(err, errUnknownDevice) see through the wrapper.
-func (e relayRefused) Unwrap() error {
-	if e.msg == errUnknownDevice.Error() {
-		return errUnknownDevice
-	}
-	return nil
-}
+func (e relayRefused) Unwrap() error { return e.err }
 
 // refused categorizes a pre-pump error (via relayErr) and wraps it as a
 // relayRefused, if any.
@@ -46,7 +41,7 @@ func refused(err error) error {
 	if e == nil {
 		return nil
 	}
-	return relayRefused{msg: e.Error()}
+	return relayRefused{err: e}
 }
 
 // tcpStream adapts the ADB client's TCP connection to byteStream so the same

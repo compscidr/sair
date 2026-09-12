@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -66,6 +67,69 @@ func TestScopedPortAssignsStableTransportIdsToRemoteDevices(t *testing.T) {
 	}
 	if sp.remoteTransportID("NOPE") != 0 {
 		t.Errorf("unknown serial has no transport id")
+	}
+}
+
+// TestTransportIdReachesARemoteDevice covers host:transport-id:<id> for a
+// remote device: the id host:devices-l advertises for it (from
+// (*ScopedPort).remoteTransportID, wired onto the connection the same way
+// runAcceptLoop does) must resolve back to the serial via
+// remoteSerialByTransportID when the tracker doesn't know it, not just FAIL
+// with "device not found".
+func TestTransportIdReachesARemoteDevice(t *testing.T) {
+	tracker := newTestTracker()
+	allowed := map[string]struct{}{"R1": {}}
+	remote := map[string]*pb.DeviceInfo{"R1": {Serial: "R1", Model: "Pixel Remote"}}
+	sp := &ScopedPort{RemoteDevices: remote}
+	// A real (if unimplemented) orchestrator client so RelayToDevice fails
+	// with a normal error instead of nil-pointer-dereferencing on a nil
+	// CommandRouter -- the point of this test is transport id resolution,
+	// not the relay itself, so any non-panicking outcome from the tunnel
+	// attempt is fine.
+	router := &CommandRouter{orchClient: startFakeOrchestratorFrom(t, &fakeSessionServer{}), apiKey: "k"}
+
+	newConn := func() (*AdbConnection, net.Conn) {
+		client, server := net.Pipe()
+		c := NewAdbConnection(server, router, tracker, allowed, nil, remote)
+		c.remoteTransportID = sp.remoteTransportID
+		c.remoteSerialByTransportID = sp.remoteSerialByTransportID
+		return c, client
+	}
+	drive := func(c *AdbConnection, client net.Conn, request string) string {
+		t.Helper()
+		go func() { c.handleHostCommand(request); c.conn.Close() }()
+		buf := make([]byte, 4096)
+		var out []byte
+		for {
+			n, err := client.Read(buf)
+			out = append(out, buf[:n]...)
+			if err != nil {
+				break
+			}
+		}
+		return string(out)
+	}
+
+	c1, client1 := newConn()
+	long := drive(c1, client1, "host:devices-l")
+	id := sp.remoteTransportID("R1") // same stable id host:devices-l just advertised for R1
+	if !strings.Contains(long, fmt.Sprintf("transport_id:%d", id)) {
+		t.Fatalf("host:devices-l did not advertise the expected transport id, got %q", long)
+	}
+
+	c2, client2 := newConn()
+	resp := drive(c2, client2, fmt.Sprintf("host:transport-id:%d", id))
+	if !strings.HasPrefix(resp, "OKAY") {
+		t.Errorf("host:transport-id: for a remote device's own id should start OKAY, got %q", resp)
+	}
+	if strings.Contains(resp, "device not found for transport id") {
+		t.Errorf("remote device's transport id must resolve via remoteSerialByTransportID, got %q", resp)
+	}
+
+	c3, client3 := newConn()
+	resp = drive(c3, client3, "host:transport-id:9999999")
+	if !strings.HasPrefix(resp, "FAIL") || !strings.Contains(resp, "device not found for transport id") {
+		t.Errorf("an unknown transport id should still FAIL as not found, got %q", resp)
 	}
 }
 
