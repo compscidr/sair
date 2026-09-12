@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	pb "github.com/compscidr/sair/proto/orchestrator"
@@ -26,6 +27,27 @@ type ScopedPort struct {
 	// Log of ADB requests made on this port, shipped to the orchestrator on
 	// each heartbeat and on release.
 	Log *LockLog
+	// RemoteDevices are granted devices reached through the relay, keyed by
+	// serial. nil for none.
+	RemoteDevices map[string]*pb.DeviceInfo
+	// remoteTransport assigns stable transport ids to RemoteDevices, disjoint
+	// from the tracker's ids (which start at 1).
+	remoteTransport sync.Map // serial -> int
+	remoteNext      atomic.Int32
+}
+
+// remoteTransportID returns a transport id for a remote serial, stable for the
+// port's lifetime and disjoint from the tracker's ids (which start at 1).
+func (sp *ScopedPort) remoteTransportID(serial string) int {
+	if _, ok := sp.RemoteDevices[serial]; !ok {
+		return 0
+	}
+	if v, ok := sp.remoteTransport.Load(serial); ok {
+		return v.(int)
+	}
+	id := 1_000_000 + int(sp.remoteNext.Add(1))
+	v, _ := sp.remoteTransport.LoadOrStore(serial, id)
+	return v.(int)
 }
 
 // ScopedPortManager manages scoped ADB listener ports for per-runner device isolation.
@@ -70,7 +92,7 @@ func (m *ScopedPortManager) Acquire(requestedSerials map[string]struct{}, count 
 	if err != nil {
 		return nil, err
 	}
-	sp, err := m.CreateScopedPort(result.LockID, result.Serials)
+	sp, err := m.CreateScopedPort(result.LockID, result.Serials, result.RemoteDevices)
 	if err != nil {
 		// Clean up: release the lock if we can't create the port
 		if _, releaseErr := m.commandRouter.ReleaseLock(result.LockID, "error", nil); releaseErr != nil {
@@ -83,7 +105,7 @@ func (m *ScopedPortManager) Acquire(requestedSerials map[string]struct{}, count 
 }
 
 // CreateScopedPort creates a scoped port for an already-acquired lock.
-func (m *ScopedPortManager) CreateScopedPort(lockID string, serials map[string]struct{}) (*ScopedPort, error) {
+func (m *ScopedPortManager) CreateScopedPort(lockID string, serials map[string]struct{}, remoteDevices map[string]*pb.DeviceInfo) (*ScopedPort, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -108,6 +130,7 @@ func (m *ScopedPortManager) CreateScopedPort(lockID string, serials map[string]s
 		heartbeatStop: make(chan struct{}),
 		keepaliveDone: make(chan struct{}),
 		Log:           &LockLog{},
+		RemoteDevices: remoteDevices,
 	}
 
 	// Start accept loop
@@ -218,7 +241,8 @@ func (m *ScopedPortManager) runAcceptLoop(sp *ScopedPort) {
 				slog.Warn("failed to set TCP_NODELAY", "remote", conn.RemoteAddr(), "error", err)
 			}
 		}
-		adbConn := NewAdbConnection(conn, m.commandRouter, m.deviceListTracker, sp.Serials, sp.Log)
+		adbConn := NewAdbConnection(conn, m.commandRouter, m.deviceListTracker, sp.Serials, sp.Log, sp.RemoteDevices)
+		adbConn.remoteTransportID = sp.remoteTransportID
 		go adbConn.Handle()
 	}
 }

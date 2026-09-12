@@ -74,7 +74,7 @@ func (p *AdbProxy) Start() error {
 			}
 		}
 		// Bare port: allowedSerials = empty map → no devices visible
-		adbConn := NewAdbConnection(conn, p.commandRouter, p.deviceListTracker, map[string]struct{}{}, nil)
+		adbConn := NewAdbConnection(conn, p.commandRouter, p.deviceListTracker, map[string]struct{}{}, nil, nil)
 		go adbConn.Handle()
 	}
 	return nil

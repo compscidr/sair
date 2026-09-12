@@ -22,6 +22,10 @@ import (
 type LockResult struct {
 	LockID  string
 	Serials map[string]struct{}
+	// RemoteDevices are granted devices that live on another proxy (or
+	// tenant), reached through the relay, with the info their owner
+	// reported. Keyed by serial; nil for none.
+	RemoteDevices map[string]*pb.DeviceInfo
 }
 
 // CommandRouter is a gRPC client that routes:
@@ -279,7 +283,14 @@ func (r *CommandRouter) AcquireLock(serials map[string]struct{}, count int32, de
 	for _, s := range resp.Serials {
 		resultSerials[s] = struct{}{}
 	}
-	return &LockResult{LockID: resp.LockId, Serials: resultSerials}, nil
+	var remote map[string]*pb.DeviceInfo
+	if len(resp.RemoteDevices) > 0 {
+		remote = make(map[string]*pb.DeviceInfo, len(resp.RemoteDevices))
+		for _, d := range resp.RemoteDevices {
+			remote[d.Serial] = d
+		}
+	}
+	return &LockResult{LockID: resp.LockId, Serials: resultSerials, RemoteDevices: remote}, nil
 }
 
 // ReleaseLock releases a lock, reporting the job outcome so the orchestrator

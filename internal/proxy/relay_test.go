@@ -310,6 +310,58 @@ func TestRelayToDeviceOnOldOrchestratorIsUnknownDevice(t *testing.T) {
 	}
 }
 
+// TestRelayRefusedWrapsIntoTypedErrorAndUnwrapsToErrUnknownDevice tests the
+// refused()/relayRefused machinery that AdbConnection.tunnel relies on to
+// decide whether it is safe to write FAIL into the client's stream: a
+// pre-pump refusal (refused()'s output) must be a relayRefused, and the old-
+// orchestrator case must still unwrap to errUnknownDevice through it.
+//
+// This is a unit test on the helpers rather than a round trip through
+// RelayToDevice: an immediate refusal from the fake orchestrator's Tunnel
+// handler (returned before it ever reads the client's Send) does not
+// reliably make the client's stream.Send fail in this in-process bufconn
+// harness -- gRPC's Send only fails once the local stream is already known
+// closed, which is a race against the transport's read loop noticing the
+// server's trailers, and it consistently loses that race here for a small
+// message. So both TestRelayToDeviceSurfacesOrchestratorRefusalAsError and
+// TestRelayToDeviceOnOldOrchestratorIsUnknownDevice actually observe their
+// error via the post-pump path (plain, not relayRefused) even though
+// conceptually no bytes ever flowed. That is an accepted limitation of the
+// pre-pump/post-pump split (RelayToDevice cannot tell, post-pump, whether
+// bytes already flowed), not a bug in it, and it is why this test exercises
+// refused() directly instead of asserting types on those two existing tests.
+func TestRelayRefusedWrapsIntoTypedErrorAndUnwrapsToErrUnknownDevice(t *testing.T) {
+	err := refused(status.New(codes.FailedPrecondition, "device REMOTE1 is not in lock l1").Err())
+	var rr relayRefused
+	if !errors.As(err, &rr) {
+		t.Errorf("want a relayRefused, got %T: %v", err, err)
+	}
+	if err.Error() != "device REMOTE1 is not in lock l1" {
+		t.Errorf("message not preserved, got %q", err.Error())
+	}
+
+	unknown := refused(status.New(codes.Unimplemented, "no Tunnel").Err())
+	if !errors.As(unknown, &rr) {
+		t.Errorf("want a relayRefused, got %T: %v", unknown, unknown)
+	}
+	if !errors.Is(unknown, errUnknownDevice) {
+		t.Errorf("want errors.Is to see errUnknownDevice through the relayRefused wrapper, got %v", unknown)
+	}
+}
+
+// The mid-stream case (a failure after bytes already flowed, e.g. reusing
+// TestServeRelayDoesNotDrainAfterAnError's device-source-errors-after-OKAY
+// setup) is not covered by an integration test here: whether and when
+// RelayToDevice observes and returns that failure depends on how the fake
+// orchestrator's splice() and ServeRelay's teardown interleave once the
+// holder's client connection closes, which is flaky under -race (it timed
+// out roughly half the time in repeated local runs, not just occasionally).
+// The relevant guarantee -- that AdbConnection.tunnel never treats a
+// post-pump error as relayRefused -- follows directly from the code: only
+// refused() (used solely by the two pre-pump return sites in RelayToDevice)
+// ever produces a relayRefused, and the post-pump return site always calls
+// plain relayErr().
+
 func TestServeRelayReportsUnknownSerial(t *testing.T) {
 	f := newFakeRelayOrchestrator()
 	r := relayRouter(t, f, &fakeDeviceSource{}, map[string]string{}) // nothing local

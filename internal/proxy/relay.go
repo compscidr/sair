@@ -22,6 +22,33 @@ import (
 // nobody has.
 var errUnknownDevice = errors.New("unknown device")
 
+// relayRefused marks a RelayToDevice error that happened before any bytes
+// were relayed: the orchestrator (or dial) refused outright. Callers may
+// safely write it back to the ADB client as FAIL. An error that isn't a
+// relayRefused may have happened after bytes already flowed, so writing FAIL
+// for it would corrupt the stream.
+type relayRefused struct{ msg string }
+
+func (e relayRefused) Error() string { return e.msg }
+
+// Unwrap lets errors.Is(err, errUnknownDevice) see through the wrapper.
+func (e relayRefused) Unwrap() error {
+	if e.msg == errUnknownDevice.Error() {
+		return errUnknownDevice
+	}
+	return nil
+}
+
+// refused categorizes a pre-pump error (via relayErr) and wraps it as a
+// relayRefused, if any.
+func refused(err error) error {
+	e := relayErr(err)
+	if e == nil {
+		return nil
+	}
+	return relayRefused{msg: e.Error()}
+}
+
 // tcpStream adapts the ADB client's TCP connection to byteStream so the same
 // pump serves the holder side. CloseSend half-closes the socket's write side.
 type tcpStream struct{ conn net.Conn }
@@ -93,7 +120,7 @@ func (r *CommandRouter) RelayToDevice(serial, initialCommand string, conn net.Co
 	defer cancel()
 	stream, err := r.orchClient.Tunnel(ctx)
 	if err != nil {
-		return relayErr(err)
+		return refused(err)
 	}
 	id := uuid.NewString()
 	if err := stream.Send(&pb.TunnelData{Payload: &pb.TunnelData_Setup{Setup: &pb.TunnelSetup{
@@ -101,9 +128,9 @@ func (r *CommandRouter) RelayToDevice(serial, initialCommand string, conn net.Co
 	}}}); err != nil {
 		// Send on a refused stream returns io.EOF; the status is on Recv.
 		if _, rerr := stream.Recv(); rerr != nil {
-			return relayErr(rerr)
+			return refused(rerr)
 		}
-		return relayErr(err)
+		return refused(err)
 	}
 	slog.Debug("relay: holder tunnel open", "tunnelId", id, "serial", serial)
 	err = pumpStreams(tcpStream{conn}, closeSignalStream{tunnelStream{stream}})
