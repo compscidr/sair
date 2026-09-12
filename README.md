@@ -186,6 +186,10 @@ eval $(sair-acquire --serial DEVICE_A,DEVICE_B)
 # Acquire any N free devices (mutually exclusive with --serial)
 eval $(sair-acquire --count 2)
 
+# Queue behind every default-priority job while devices are busy (higher
+# goes first, ties are FIFO, default 0) — e.g. so bot PRs don't hold up humans
+eval $(sair-acquire --priority -1)
+
 # Point to a remote proxy
 eval $(sair-acquire --url http://proxy-host:8550 --api-key my-key)
 
@@ -319,7 +323,10 @@ jobs:
 Key points about the workflow:
 
 - `sair-acquire` blocks until a device is available, so jobs queue naturally
-  when all devices are busy.
+  when all devices are busy. `--priority N` orders that queue (higher first,
+  FIFO within a value, default 0); pass e.g.
+  `--priority ${{ github.actor == 'dependabot[bot]' && -1 || 0 }}` so bot PRs
+  wait behind human ones.
 - `--count 1` locks a single free device instead of the whole pool, leaving the
   other devices for concurrent jobs. It also sets `ANDROID_SERIAL`, so Gradle
   targets that one device.

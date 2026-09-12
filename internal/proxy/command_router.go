@@ -256,8 +256,9 @@ func (r *CommandRouter) ReportDevices(devices []*pb.DeviceInfo) error {
 
 // AcquireLock asks the orchestrator for a lock. Pass serials to request
 // specific devices, or count to request that many arbitrary free devices.
-// Passing neither locks every device in the tenant's pool.
-func (r *CommandRouter) AcquireLock(serials map[string]struct{}, count int32, deadlineMinutes int64, repo, runURL string) (*LockResult, error) {
+// Passing neither locks every device in the tenant's pool. priority orders
+// the wait when the devices are busy: higher first, FIFO within a value.
+func (r *CommandRouter) AcquireLock(serials map[string]struct{}, count int32, deadlineMinutes int64, repo, runURL string, priority int32) (*LockResult, error) {
 	if count < 0 {
 		return nil, fmt.Errorf("count must not be negative: %d", count)
 	}
@@ -270,7 +271,7 @@ func (r *CommandRouter) AcquireLock(serials map[string]struct{}, count int32, de
 	ctx, cancel := r.ctxWithTimeout(time.Duration(deadlineMinutes) * time.Minute)
 	defer cancel()
 
-	req := &pb.AcquireLockRequest{Repo: repo, Count: count, RunUrl: runURL, ProxyId: r.proxyID}
+	req := &pb.AcquireLockRequest{Repo: repo, Count: count, RunUrl: runURL, ProxyId: r.proxyID, Priority: priority}
 	for s := range serials {
 		req.Serials = append(req.Serials, s)
 	}

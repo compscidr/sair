@@ -56,6 +56,9 @@ message AcquireLockRequest {
   // Same value as ProxyHello.proxy_id. Locks are granted only on devices this
   // proxy reported. Empty from proxies that predate sessions.
   string proxy_id = 6;
+  // Queue order when the devices are busy: higher is served first, ties are
+  // FIFO. 0 (the default) is what every request had before this field.
+  int32 priority = 7;
 }
 
 message AcquireLockResponse {

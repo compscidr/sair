@@ -75,6 +75,8 @@ func TestHTTPApiAcquireCountValidation(t *testing.T) {
 		{"non-numeric count", "?count=abc", "count parameter must be a non-negative integer"},
 		{"negative count", "?count=-1", "count parameter must be a non-negative integer"},
 		{"count with serial", "?count=1&serial=DEVICE_A", "count and serial parameters are mutually exclusive"},
+		{"non-numeric priority", "?priority=high", "priority parameter must be a 32-bit integer"},
+		{"oversized priority", "?priority=2147483648", "priority parameter must be a 32-bit integer"},
 	}
 
 	for _, tt := range tests {
