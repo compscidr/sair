@@ -511,10 +511,12 @@ func TestRelayToDeviceMidStreamFailureIsNotARefusal(t *testing.T) {
 	if _, err := io.ReadFull(client, buf); err != nil || string(buf) != "OKAY" {
 		t.Fatalf("expected OKAY before the mid-stream failure, got %q err=%v", buf, err)
 	}
-	// pumpStreams always sends a courtesy graceful half-close to the peer
-	// before reporting an error on its own side (so the peer does not hang
-	// waiting for more input), so the owner's real failure reaches the holder
-	// as a graceful tunnel end on that direction. The holder's other
+	// When a direction's RecvBytes fails (EOF or a real error), pumpStreams
+	// half-closes the peer before reporting, so the peer does not hang waiting
+	// for more input; a SendBytes failure reports without that courtesy, since
+	// the stream that failed to send is already dead. The owner's device-source
+	// error is a RecvBytes failure, so it reaches the holder as a graceful
+	// tunnel end on that direction. The holder's other
 	// direction -- reading the local ADB client connection -- has nothing to
 	// do with the tunnel and would otherwise block forever, since nothing
 	// here ever writes to or closes the client's write side. SetLinger(0)
