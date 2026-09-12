@@ -107,12 +107,13 @@ func (r *CommandRouter) RelayToDevice(serial, initialCommand string, conn net.Co
 	}
 	slog.Debug("relay: holder tunnel open", "tunnelId", id, "serial", serial)
 	err = pumpStreams(tcpStream{conn}, closeSignalStream{tunnelStream{stream}})
-	// A graceful CloseSend (as opposed to the cancel below, which aborts the
-	// RPC outright) lets the orchestrator finish delivering anything already
-	// queued -- including our own half_close message above -- before the
-	// stream ends. Cancel then reclaims the call; by this point pumpStreams
-	// has already drained both directions, so there is nothing left to lose.
-	stream.CloseSend()
+	// No graceful CloseSend before cancel here, unlike ServeRelay: the
+	// holder's own half_close is always causally before the owner's
+	// half_close that pumpStreams waited on to get here, so its delivery is
+	// already implied -- a CloseSend this close to cancel wouldn't reliably
+	// add anything (CloseSend only enqueues, cancel can drop the queued
+	// frame moments later) and, on an error return, would risk a Send racing
+	// the still-running copyDir goroutine (see the drain comment below).
 	cancel()
 	conn.SetReadDeadline(time.Now())
 	if err == nil || errors.Is(err, io.EOF) {
@@ -179,27 +180,50 @@ func (r *CommandRouter) ServeRelay(open *pb.RelayOpen) {
 		return
 	}
 	if err := tun.Send(&pb.TunnelData{Payload: &pb.TunnelData_Setup{Setup: &pb.TunnelSetup{TunnelId: open.TunnelId, Side: pb.TunnelSide_TUNNEL_SIDE_OWNER}}}); err != nil {
+		// Send on a refused stream returns io.EOF; the status is on Recv.
+		if _, rerr := tun.Recv(); rerr != nil {
+			if st, ok := status.FromError(rerr); ok {
+				fail(st.Message())
+			} else {
+				fail(rerr.Error())
+			}
+			return
+		}
 		fail(err.Error())
 		return
 	}
 	slog.Info("relay: serving", "tunnelId", open.TunnelId, "serial", open.Serial, "lockId", open.LockId)
-	if err := pumpStreams(closeSignalStream{tunnelStream{tun}}, forwardStream{fwd}); err != nil && !errors.Is(err, io.EOF) {
-		slog.Debug("relay: ended with error", "tunnelId", open.TunnelId, "error", err)
+	pumpErr := pumpStreams(closeSignalStream{tunnelStream{tun}}, forwardStream{fwd})
+	if pumpErr != nil && !errors.Is(pumpErr, io.EOF) {
+		slog.Debug("relay: ended with error", "tunnelId", open.TunnelId, "error", pumpErr)
 	}
-	// SendMsg only guarantees the message is handed to the transport, not that
-	// it reached the orchestrator (grpc-go: "an untimely stream closure may
-	// result in lost messages") -- an immediate cancel could drop our own
-	// half_close before the holder ever sees it. CloseSend, then draining
-	// Recv to the orchestrator's own EOF, forces a round trip: the
-	// orchestrator only closes its side of Tunnel once it has spliced
-	// everything we sent through to the holder AND the holder has gracefully
-	// closed its own call (the holder does that once it sees this owner
-	// leg's half_close), so by the time Recv returns here it is safe to
-	// cancel -- there is nothing left in flight to lose.
-	tun.CloseSend()
-	for {
-		if _, err := tun.Recv(); err != nil {
-			break
+	// Only drain when pumpStreams returned nil: that happens exclusively once
+	// BOTH copyDir goroutines have already finished on their own (pumpStreams
+	// returns the first REAL error immediately, without waiting for the
+	// other direction -- see its comment). On a real-error return the other
+	// goroutine can still be live, e.g. blocked in tun.Recv() -- calling
+	// Recv again here would race it (grpc-go: "it is not safe to call
+	// RecvMsg on the same stream in different goroutines"), and CloseSend
+	// below is a Send that could just as easily race the other goroutine's
+	// own SendBytes on tun. So on error we skip straight to cancelling.
+	//
+	// When it is nil, SendMsg only guarantees our own half_close (sent from
+	// within pumpStreams, above) was handed to the transport, not that it
+	// reached the orchestrator (grpc-go: "an untimely stream closure may
+	// result in lost messages") -- an immediate cancel could still drop it
+	// before the holder ever sees it. CloseSend, then draining Recv to the
+	// orchestrator's own EOF, forces a round trip: the orchestrator only
+	// closes its side of Tunnel once it has spliced everything we sent
+	// through to the holder AND the holder has gracefully closed its own
+	// call (which the holder does once it sees this leg's half_close), so by
+	// the time Recv returns here it is safe to cancel -- there is nothing
+	// left in flight to lose, and no other goroutine left to race.
+	if pumpErr == nil {
+		tun.CloseSend()
+		for {
+			if _, err := tun.Recv(); err != nil {
+				break
+			}
 		}
 	}
 	ocancel()

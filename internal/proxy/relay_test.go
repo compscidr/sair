@@ -51,7 +51,8 @@ type fakeRelayOrchestrator struct {
 	mu     sync.Mutex
 	setups []*pb.TunnelSetup
 	halves map[string]chan grpc.BidiStreamingServer[pb.TunnelData, pb.TunnelData]
-	refuse *status.Status // when set, every Tunnel call ends with this status
+	refuse *status.Status  // when set, every Tunnel call ends with this status
+	ended  map[string]bool // tunnel_id -> splice() has returned (both legs done relaying)
 }
 
 func newFakeRelayOrchestrator() *fakeRelayOrchestrator {
@@ -80,7 +81,14 @@ func (f *fakeRelayOrchestrator) Tunnel(stream grpc.BidiStreamingServer[pb.Tunnel
 	f.mu.Unlock()
 	select {
 	case peer := <-ch: // the other half arrived first: we are second, splice from here
-		return splice(stream, peer)
+		err := splice(stream, peer)
+		f.mu.Lock()
+		if f.ended == nil {
+			f.ended = map[string]bool{}
+		}
+		f.ended[setup.TunnelId] = true
+		f.mu.Unlock()
+		return err
 	case ch <- stream: // we are first: the second caller splices
 		<-stream.Context().Done()
 		return nil
@@ -130,6 +138,9 @@ type fakeDeviceSource struct {
 	dspb.UnimplementedDeviceSourceServer
 	mu     sync.Mutex
 	setups []*dspb.ForwardSetup
+	// failAfterSetup, when set, makes ForwardToDevice return this status
+	// right after replying OKAY, simulating the device disappearing mid-use.
+	failAfterSetup *status.Status
 }
 
 func (d *fakeDeviceSource) ForwardToDevice(stream grpc.BidiStreamingServer[dspb.ForwardData, dspb.ForwardData]) error {
@@ -142,6 +153,9 @@ func (d *fakeDeviceSource) ForwardToDevice(stream grpc.BidiStreamingServer[dspb.
 	d.mu.Unlock()
 	if err := stream.Send(&dspb.ForwardData{Payload: &dspb.ForwardData_Data{Data: []byte("OKAY")}}); err != nil {
 		return err
+	}
+	if d.failAfterSetup != nil {
+		return d.failAfterSetup.Err()
 	}
 	for {
 		m, err := stream.Recv()
@@ -257,8 +271,13 @@ func TestRelayToDeviceRoundTripsThroughOrchestratorAndForwardsHalfClose(t *testi
 		t.Fatalf("expected BYE after half-close, got %q err=%v", buf[:n], err)
 	}
 	client.Close()
-	if err := <-done; err != nil {
-		t.Errorf("RelayToDevice returned %v", err)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("RelayToDevice returned %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("RelayToDevice did not return within 3s")
 	}
 	ds.mu.Lock()
 	defer ds.mu.Unlock()
@@ -309,4 +328,58 @@ func TestServeRelayReportsUnknownSerial(t *testing.T) {
 	if len(f.setups) != 0 {
 		t.Errorf("owner must not open a tunnel for an unknown serial, got %+v", f.setups)
 	}
+}
+
+// TestServeRelayDoesNotDrainAfterAnError guards against a concurrency bug:
+// when pumpStreams returns a real error (not the graceful nil it returns
+// once both directions have already drained), the *other* copyDir goroutine
+// can still be running and still calling Send/Recv on the same orchestrator
+// stream. ServeRelay must not also touch that stream (CloseSend, then a
+// drain loop calling Recv) in that case -- it must skip straight to
+// cancelling. Here the device source errors right after the setup reply
+// while the holder side is kept open and otherwise idle, so if ServeRelay
+// drained anyway it would either race the still-live copyDir goroutine
+// (caught by -race) or hang forever waiting on a stream nothing will ever
+// close for it.
+func TestServeRelayDoesNotDrainAfterAnError(t *testing.T) {
+	f := newFakeRelayOrchestrator()
+	ds := &fakeDeviceSource{failAfterSetup: status.New(codes.Internal, "device unplugged")}
+	r := relayRouter(t, f, ds, map[string]string{"REMOTE1": "passthrough:///bufconn-ds"})
+
+	client, server := tcpPair(t)
+	go func() { r.RelayToDevice("REMOTE1", "shell:", server) }()
+
+	waitFor(t, "holder setup", func() bool { f.mu.Lock(); defer f.mu.Unlock(); return len(f.setups) >= 1 })
+	f.mu.Lock()
+	s := f.setups[0]
+	f.mu.Unlock()
+
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		r.ServeRelay(&pb.RelayOpen{TunnelId: s.TunnelId, Serial: s.Serial, InitialCommand: s.InitialCommand, LockId: "l1"})
+	}()
+
+	select {
+	case <-served:
+	case <-time.After(3 * time.Second):
+		t.Fatal("ServeRelay did not return within 3s after the device source errored")
+	}
+
+	// The orchestrator's own splice for this tunnel must also wind down: its
+	// owner leg reliably ends the moment ocancel fires (that context is
+	// cancelled directly), and its holder leg ends once the holder eventually
+	// closes (which it does here) and the orchestrator's attempt to forward
+	// that onward hits the already-cancelled owner leg. This is the reliable
+	// half of teardown to assert on: ServeRelay's error path sends no
+	// half_close of its own (by design, per the fix above), so whether the
+	// holder's RelayToDevice call notices in any bounded time is best-effort
+	// -- its own half_close there is only enqueued, not confirmed delivered,
+	// before ocancel/cancel run -- and is not asserted here.
+	client.Close()
+	waitFor(t, "the orchestrator's splice for this tunnel to end", func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.ended[s.TunnelId]
+	})
 }
