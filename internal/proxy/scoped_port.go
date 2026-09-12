@@ -170,7 +170,7 @@ func (m *ScopedPortManager) Release(lockID, status string) bool {
 	closed := m.CloseScopedPort(lockID)
 	var entries []*pb.LockLogEntry
 	if sp != nil {
-		entries = sp.Log.Drain()
+		entries = sp.Log.DrainAll()
 	}
 	released, err := m.commandRouter.ReleaseLock(lockID, status, entries)
 	if err != nil {
@@ -231,7 +231,7 @@ func (m *ScopedPortManager) ShutdownAll() {
 
 	for _, sp := range ports {
 		m.CloseScopedPort(sp.LockID) // stops the heartbeat before we drain
-		entries := sp.Log.Drain()
+		entries := sp.Log.DrainAll()
 		if _, err := m.commandRouter.ReleaseLock(sp.LockID, "cancelled", entries); err != nil {
 			slog.Warn("failed to release lock during shutdown", "lockId", sp.LockID, "error", err)
 		}

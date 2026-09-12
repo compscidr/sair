@@ -72,12 +72,25 @@ message AcquireLockResponse {
 // observed by the proxy: the service string the client asked the device for
 // (e.g. "shell,v2,raw:am instrument -w ..."), when, how long the tunnel stayed
 // open, and how many bytes came back. Together these are the job's log.
+//
+// A request is reported in pieces that share a request_id: an open entry when
+// the service is seen (timestamp, serial, service, open = true), zero or more
+// output entries as the device answers (output set, nothing else), and a close
+// entry when the tunnel ends (duration_ms, bytes_to_client, plus serial and
+// service again). Proxies that predate this send one entry per request, the
+// close, with request_id 0.
 message LockLogEntry {
   int64 timestamp_ms = 1;
   string serial = 2;
   string service = 3;
   int64 duration_ms = 4;
   int64 bytes_to_client = 5;
+  uint64 request_id = 6;
+  bool open = 7;
+  // Text the device sent back, in order, for shell services only; sync,
+  // exec and the rest are binary and only counted. Non-UTF-8 output is
+  // replaced by a single "(binary output omitted)" piece.
+  string output = 8;
 }
 
 message ReleaseLockRequest {
