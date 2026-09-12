@@ -89,7 +89,8 @@ func TestPumpReturnsFirstRealError(t *testing.T) {
 	go func() { done <- pumpStreams(a, b) }()
 	a.in <- []byte("x") // a→b send fails
 	close(a.in)
-	close(b.in)
+	// b.in stays open: b's peer is silent, mirroring the real relay where the
+	// caller (not the test) cancels the stream contexts to unblock b→a.
 	select {
 	case err := <-done:
 		if err == nil || err.Error() != "peer gone" {

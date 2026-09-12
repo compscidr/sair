@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"io"
-	"sync"
 
 	dspb "github.com/compscidr/sair/proto/devicesource"
 	pb "github.com/compscidr/sair/proto/orchestrator"
@@ -22,21 +21,19 @@ type byteStream interface {
 // pumpStreams copies a→b and b→a until both directions have ended. A
 // half-close on one side becomes CloseSend on the other while the reverse
 // direction keeps flowing: ADB relies on this for `shell` with piped stdin,
-// `install` and `sync`. Returns the first error that was not a half-close.
-//
-// When one direction fails with a non-EOF error, the other direction may
-// still be blocked in RecvBytes; the caller cancels both streams' contexts
-// after this returns, which unblocks it.
+// `install` and `sync`. pumpStreams returns as soon as one direction fails;
+// the other goroutine exits once the caller cancels the streams' contexts
+// (or when its own peer ends), so it must not be waited on here.
 func pumpStreams(a, b byteStream) error {
-	var wg sync.WaitGroup
 	errs := make(chan error, 2)
 	copyDir := func(from, to byteStream) {
-		defer wg.Done()
 		for {
 			p, err := from.RecvBytes()
 			if err != nil {
 				to.CloseSend()
-				if err != io.EOF {
+				if err == io.EOF {
+					errs <- nil
+				} else {
 					errs <- err
 				}
 				return
@@ -51,12 +48,12 @@ func pumpStreams(a, b byteStream) error {
 			}
 		}
 	}
-	wg.Add(2)
 	go copyDir(a, b)
 	go copyDir(b, a)
-	wg.Wait()
-	close(errs)
-	for err := range errs {
+	if err := <-errs; err != nil {
+		return err
+	}
+	if err := <-errs; err != nil {
 		return err
 	}
 	return nil
