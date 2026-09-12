@@ -115,6 +115,14 @@ func (c closeSignalStream) CloseSend() error {
 // asks the owner to open the other half, and pumps until the connection ends.
 // The returned error's text is meant for the ADB client (written as FAIL by
 // the caller); an old orchestrator yields errUnknownDevice.
+//
+// The holder waits for the orchestrator's accepted message (sent once the
+// owner has joined) before relaying any bytes. Every error up to and
+// including that wait -- "not in lock", the owner never joining, an old
+// orchestrator, or anything else -- is therefore a refusal (relayRefused):
+// nothing has been relayed yet, so it is always safe to report as FAIL. Once
+// accepted has been seen, pumpStreams may have relayed real bytes before
+// failing, so errors from there on are plain.
 func (r *CommandRouter) RelayToDevice(serial, initialCommand string, conn net.Conn) error {
 	ctx, cancel := context.WithCancel(metadata.NewOutgoingContext(context.Background(), metadata.Pairs("x-api-key", r.apiKey)))
 	defer cancel()
@@ -131,6 +139,13 @@ func (r *CommandRouter) RelayToDevice(serial, initialCommand string, conn net.Co
 			return refused(rerr)
 		}
 		return refused(err)
+	}
+	first, err := stream.Recv()
+	if err != nil {
+		return refused(err)
+	}
+	if _, ok := first.Payload.(*pb.TunnelData_Accepted); !ok {
+		return refused(fmt.Errorf("orchestrator did not accept the tunnel"))
 	}
 	slog.Debug("relay: holder tunnel open", "tunnelId", id, "serial", serial)
 	err = pumpStreams(tcpStream{conn}, closeSignalStream{tunnelStream{stream}})

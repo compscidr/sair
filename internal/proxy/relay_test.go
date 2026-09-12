@@ -44,19 +44,35 @@ func TestRelayProtoShapes(t *testing.T) {
 }
 
 // fakeRelayOrchestrator implements Tunnel by splicing the HOLDER and OWNER
-// calls that name the same tunnel id, like the real orchestrator will. It also
-// records setups and lets a test push relay_open on a fakeSessionServer.
+// calls that name the same tunnel id, like the real orchestrator will. Once
+// both halves have joined it sends the holder an accepted message before
+// splicing. Whatever error splice() returns (nil on a clean end) is also used
+// to end the first-arrived leg's own RPC, so a real failure on one leg ends
+// the other's promptly too -- the real orchestrator's contract -- rather than
+// leaving it blocked on its own client disconnecting. It also records setups
+// and lets a test push relay_open on a fakeSessionServer.
 type fakeRelayOrchestrator struct {
 	fakeSessionServer
 	mu     sync.Mutex
 	setups []*pb.TunnelSetup
-	halves map[string]chan grpc.BidiStreamingServer[pb.TunnelData, pb.TunnelData]
+	halves map[string]chan tunnelHalf
+	// done delivers, per tunnel id, the error splice() returned for it (nil on
+	// a clean end) -- signaling the first-arrived leg (blocked waiting for the
+	// other side) to end its own RPC the same way.
+	done   map[string]chan error
 	refuse *status.Status  // when set, every Tunnel call ends with this status
 	ended  map[string]bool // tunnel_id -> splice() has returned (both legs done relaying)
 }
 
+// tunnelHalf pairs a server-side stream with the side it was set up as, so
+// the second arrival can tell which of the two is the holder.
+type tunnelHalf struct {
+	stream grpc.BidiStreamingServer[pb.TunnelData, pb.TunnelData]
+	side   pb.TunnelSide
+}
+
 func newFakeRelayOrchestrator() *fakeRelayOrchestrator {
-	return &fakeRelayOrchestrator{fakeSessionServer: *newFakeSessionServer(), halves: map[string]chan grpc.BidiStreamingServer[pb.TunnelData, pb.TunnelData]{}}
+	return &fakeRelayOrchestrator{fakeSessionServer: *newFakeSessionServer(), halves: map[string]chan tunnelHalf{}, done: map[string]chan error{}}
 }
 
 func (f *fakeRelayOrchestrator) Tunnel(stream grpc.BidiStreamingServer[pb.TunnelData, pb.TunnelData]) error {
@@ -75,58 +91,103 @@ func (f *fakeRelayOrchestrator) Tunnel(stream grpc.BidiStreamingServer[pb.Tunnel
 	f.setups = append(f.setups, setup)
 	ch, ok := f.halves[setup.TunnelId]
 	if !ok {
-		ch = make(chan grpc.BidiStreamingServer[pb.TunnelData, pb.TunnelData], 1)
+		ch = make(chan tunnelHalf, 1)
 		f.halves[setup.TunnelId] = ch
 	}
+	done, ok := f.done[setup.TunnelId]
+	if !ok {
+		done = make(chan error, 1)
+		f.done[setup.TunnelId] = done
+	}
 	f.mu.Unlock()
+
+	me := tunnelHalf{stream, setup.Side}
 	select {
 	case peer := <-ch: // the other half arrived first: we are second, splice from here
-		err := splice(stream, peer)
+		holder, owner := me, peer
+		if holder.side != pb.TunnelSide_TUNNEL_SIDE_HOLDER {
+			holder, owner = owner, holder
+		}
+		if err := holder.stream.Send(&pb.TunnelData{Payload: &pb.TunnelData_Accepted{Accepted: true}}); err != nil {
+			done <- err
+			return err
+		}
+		err := splice(owner.stream, holder.stream)
 		f.mu.Lock()
 		if f.ended == nil {
 			f.ended = map[string]bool{}
 		}
 		f.ended[setup.TunnelId] = true
 		f.mu.Unlock()
+		if err != nil {
+			// A leg that fails typically ends by its own client cancelling
+			// its context, which a bare Recv() here would report as
+			// codes.Canceled -- indistinguishable, to the *other* leg's
+			// RelayToDevice, from the codes.Canceled it sees when it cancels
+			// its own context after a clean pump (which relayErr treats as
+			// nil, not a failure). Re-wrap as Aborted so ending the peer's
+			// leg on a real failure reads as a failure there too.
+			err = status.Error(codes.Aborted, "peer leg ended: "+err.Error())
+		}
+		done <- err
 		return err
-	case ch <- stream: // we are first: the second caller splices
-		<-stream.Context().Done()
-		return nil
+	case ch <- me: // we are first: the second caller splices
+		select {
+		case <-stream.Context().Done():
+			return nil
+		case err := <-done:
+			return err
+		}
 	}
 }
 
-// splice pumps x<->y on server-side streams until both end. It forwards both
-// data and half_close messages: a bare Recv()-EOF from a client's own
-// CloseSend only tells THIS RPC "no more from that side" -- it can't by
-// itself unblock the *other* leg's client, since a server can't half-close a
-// client's read side without ending the whole RPC (which would cut off a
-// reply still in flight). The explicit half_close message is what lets that
-// signal cross to the peer leg while both stay open.
+// splice pumps x<->y on server-side streams until both end, the same
+// short-circuit-on-real-error/wait-on-graceful-end shape as pump.go's
+// pumpStreams: a real error on either leg returns immediately (so the caller
+// can end the other leg's RPC without waiting on it), while a graceful
+// end (io.EOF) on one side waits for the other to also finish before
+// returning nil. It forwards both data and half_close messages: a bare
+// Recv()-EOF from a client's own CloseSend only tells THIS RPC "no more from
+// that side" -- it can't by itself unblock the *other* leg's client, since a
+// server can't half-close a client's read side without ending the whole RPC
+// (which would cut off a reply still in flight). The explicit half_close
+// message is what lets that signal cross to the peer leg while both stay
+// open.
 func splice(x, y grpc.BidiStreamingServer[pb.TunnelData, pb.TunnelData]) error {
-	var wg sync.WaitGroup
+	errs := make(chan error, 2)
 	cp := func(from, to grpc.BidiStreamingServer[pb.TunnelData, pb.TunnelData]) {
-		defer wg.Done()
 		for {
 			m, err := from.Recv()
 			if err != nil {
+				if err == io.EOF {
+					errs <- nil
+				} else {
+					errs <- err
+				}
 				return
 			}
 			switch p := m.Payload.(type) {
 			case *pb.TunnelData_Data:
 				if err := to.Send(&pb.TunnelData{Payload: &pb.TunnelData_Data{Data: p.Data}}); err != nil {
+					errs <- err
 					return
 				}
 			case *pb.TunnelData_HalfClose:
 				if err := to.Send(&pb.TunnelData{Payload: &pb.TunnelData_HalfClose{HalfClose: true}}); err != nil {
+					errs <- err
 					return
 				}
 			}
 		}
 	}
-	wg.Add(2)
 	go cp(x, y)
 	go cp(y, x)
-	wg.Wait()
+	if err := <-errs; err != nil {
+		return err
+	}
+	if err := <-errs; err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -296,6 +357,10 @@ func TestRelayToDeviceSurfacesOrchestratorRefusalAsError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "not in lock") {
 		t.Errorf("want the orchestrator's message, got %v", err)
 	}
+	var refused relayRefused
+	if !errors.As(err, &refused) {
+		t.Errorf("a refusal before accepted must be a relayRefused, got %T: %v", err, err)
+	}
 }
 
 func TestRelayToDeviceOnOldOrchestratorIsUnknownDevice(t *testing.T) {
@@ -308,59 +373,101 @@ func TestRelayToDeviceOnOldOrchestratorIsUnknownDevice(t *testing.T) {
 	if !errors.Is(err, errUnknownDevice) {
 		t.Errorf("want errUnknownDevice, got %v", err)
 	}
-}
-
-// TestRelayRefusedWrapsIntoTypedErrorAndUnwrapsToErrUnknownDevice tests the
-// refused()/relayRefused machinery that AdbConnection.tunnel relies on to
-// decide whether it is safe to write FAIL into the client's stream: a
-// pre-pump refusal (refused()'s output) must be a relayRefused, and the old-
-// orchestrator case must still unwrap to errUnknownDevice through it.
-//
-// This is a unit test on the helpers rather than a round trip through
-// RelayToDevice: an immediate refusal from the fake orchestrator's Tunnel
-// handler (returned before it ever reads the client's Send) does not
-// reliably make the client's stream.Send fail in this in-process bufconn
-// harness -- gRPC's Send only fails once the local stream is already known
-// closed, which is a race against the transport's read loop noticing the
-// server's trailers, and it consistently loses that race here for a small
-// message. So both TestRelayToDeviceSurfacesOrchestratorRefusalAsError and
-// TestRelayToDeviceOnOldOrchestratorIsUnknownDevice actually observe their
-// error via the post-pump path (plain, not relayRefused) even though
-// conceptually no bytes ever flowed. That is an accepted limitation of the
-// pre-pump/post-pump split (RelayToDevice cannot tell, post-pump, whether
-// bytes already flowed), not a bug in it, and it is why this test exercises
-// refused() directly instead of asserting types on those two existing tests.
-func TestRelayRefusedWrapsIntoTypedErrorAndUnwrapsToErrUnknownDevice(t *testing.T) {
-	err := refused(status.New(codes.FailedPrecondition, "device REMOTE1 is not in lock l1").Err())
-	var rr relayRefused
-	if !errors.As(err, &rr) {
-		t.Errorf("want a relayRefused, got %T: %v", err, err)
-	}
-	if err.Error() != "device REMOTE1 is not in lock l1" {
-		t.Errorf("message not preserved, got %q", err.Error())
-	}
-
-	unknown := refused(status.New(codes.Unimplemented, "no Tunnel").Err())
-	if !errors.As(unknown, &rr) {
-		t.Errorf("want a relayRefused, got %T: %v", unknown, unknown)
-	}
-	if !errors.Is(unknown, errUnknownDevice) {
-		t.Errorf("want errors.Is to see errUnknownDevice through the relayRefused wrapper, got %v", unknown)
+	var refused relayRefused
+	if !errors.As(err, &refused) {
+		t.Errorf("an old orchestrator's refusal must be a relayRefused, got %T: %v", err, err)
 	}
 }
 
-// The mid-stream case (a failure after bytes already flowed, e.g. reusing
-// TestServeRelayDoesNotDrainAfterAnError's device-source-errors-after-OKAY
-// setup) is not covered by an integration test here: whether and when
-// RelayToDevice observes and returns that failure depends on how the fake
-// orchestrator's splice() and ServeRelay's teardown interleave once the
-// holder's client connection closes, which is flaky under -race (it timed
-// out roughly half the time in repeated local runs, not just occasionally).
-// The relevant guarantee -- that AdbConnection.tunnel never treats a
-// post-pump error as relayRefused -- follows directly from the code: only
-// refused() (used solely by the two pre-pump return sites in RelayToDevice)
-// ever produces a relayRefused, and the post-pump return site always calls
-// plain relayErr().
+// TestRelayToDeviceRefusalAfterSetupIsStillAFail covers the case that used to
+// be ambiguous: a refusal that the orchestrator only decides on after reading
+// the holder's setup (e.g. because the setup names a serial not in the lock),
+// rather than one it could reject outright. Before the holder waited for
+// accepted, this looked identical to a mid-stream failure -- it happened
+// after the setup was sent, on the same code path pumpStreams errors take --
+// so it silently lost its FAIL. Now any error before accepted, for any
+// reason, is a relayRefused.
+func TestRelayToDeviceRefusalAfterSetupIsStillAFail(t *testing.T) {
+	client := startFakeOrchestratorFrom(t, &refuseAfterSetupOrchestrator{})
+	r := &CommandRouter{orchClient: client, apiKey: "key-1", proxyID: "host-a"}
+	clientConn, server := tcpPair(t)
+	defer clientConn.Close()
+	err := r.RelayToDevice("REMOTE1", "", server)
+	if err == nil || !strings.Contains(err.Error(), "not in lock") {
+		t.Errorf("want the orchestrator's message, got %v", err)
+	}
+	var refused relayRefused
+	if !errors.As(err, &refused) {
+		t.Errorf("a refusal discovered after setup must still be a relayRefused, got %T: %v", err, err)
+	}
+}
+
+// refuseAfterSetupOrchestrator reads the holder's setup (unlike
+// fakeRelayOrchestrator.refuse, which never does) and only then refuses --
+// modelling a rejection the orchestrator can only make once it has seen what
+// the holder is asking for.
+type refuseAfterSetupOrchestrator struct{ fakeSessionServer }
+
+func (f *refuseAfterSetupOrchestrator) Tunnel(stream grpc.BidiStreamingServer[pb.TunnelData, pb.TunnelData]) error {
+	if _, err := stream.Recv(); err != nil {
+		return err
+	}
+	return status.Error(codes.FailedPrecondition, "device REMOTE1 is not in lock l1")
+}
+
+// TestRelayToDeviceMidStreamFailureIsNotARefusal reuses Task 3's
+// device-source-errors-mid-stream setup (TestServeRelayDoesNotDrainAfterAnError):
+// the tunnel is accepted and the client already sees the device source's OKAY
+// before the device disappears. That failure must come back as a plain
+// error, not a relayRefused, since real bytes already reached the client.
+func TestRelayToDeviceMidStreamFailureIsNotARefusal(t *testing.T) {
+	f := newFakeRelayOrchestrator()
+	ds := &fakeDeviceSource{failAfterSetup: status.New(codes.Internal, "device unplugged")}
+	r := relayRouter(t, f, ds, map[string]string{"REMOTE1": "passthrough:///bufconn-ds"})
+
+	client, server := tcpPair(t)
+	done := make(chan error, 1)
+	go func() { done <- r.RelayToDevice("REMOTE1", "shell:", server) }()
+
+	waitFor(t, "holder setup", func() bool { f.mu.Lock(); defer f.mu.Unlock(); return len(f.setups) >= 1 })
+	f.mu.Lock()
+	s := f.setups[0]
+	f.mu.Unlock()
+	go r.ServeRelay(&pb.RelayOpen{TunnelId: s.TunnelId, Serial: s.Serial, InitialCommand: s.InitialCommand, LockId: "l1"})
+
+	// Read the OKAY the fake device source sends right after setup, so bytes
+	// have definitely flowed before the mid-stream failure below.
+	buf := make([]byte, 4)
+	if _, err := io.ReadFull(client, buf); err != nil || string(buf) != "OKAY" {
+		t.Fatalf("expected OKAY before the mid-stream failure, got %q err=%v", buf, err)
+	}
+	// pumpStreams always sends a courtesy graceful half-close to the peer
+	// before reporting an error on its own side (so the peer does not hang
+	// waiting for more input), so the owner's real failure reaches the holder
+	// as a graceful tunnel end on that direction. The holder's other
+	// direction -- reading the local ADB client connection -- has nothing to
+	// do with the tunnel and would otherwise block forever, since nothing
+	// here ever writes to or closes the client's write side. SetLinger(0)
+	// makes the close an RST rather than a graceful FIN, so the holder's
+	// local read fails with a real error instead of io.EOF, giving
+	// pumpStreams a real error to short-circuit on and making the outcome
+	// deterministic instead of a hang.
+	client.SetLinger(0)
+	client.Close()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected a mid-stream error")
+		}
+		var refused relayRefused
+		if errors.As(err, &refused) {
+			t.Errorf("mid-stream failure after bytes flowed must not be relayRefused, got %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("RelayToDevice did not return within 3s")
+	}
+}
 
 func TestServeRelayReportsUnknownSerial(t *testing.T) {
 	f := newFakeRelayOrchestrator()

@@ -171,6 +171,8 @@ message TunnelData {
     TunnelSetup setup = 1;
     bytes data = 2;
     bool half_close = 3;
+    // orchestrator -> holder only: the owner joined, bytes may flow
+    bool accepted = 4;
   }
 }
 

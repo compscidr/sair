@@ -56,11 +56,12 @@ func NewAdbConnection(
 // request into the lock's log when this is a scoped-port connection.
 //
 // A remote device (sourceAddr == "", present in remoteDevices) is reached
-// through the relay instead of the local device-source. RelayToDevice
-// distinguishes a pre-pump refusal (relayRefused, or the errUnknownDevice it
-// wraps) from a mid-stream failure: only the former is safe to report back to
-// the client as FAIL, since bytes may already have flowed for the latter and
-// writing into that stream would corrupt it.
+// through the relay instead of the local device-source. RelayToDevice waits
+// for the orchestrator's accepted message before relaying any bytes, so
+// every error it returns before that point -- including errUnknownDevice --
+// comes back as a relayRefused, safe to report to the client as FAIL. An
+// error after accepted is plain: pumpStreams may already have relayed real
+// bytes, and writing FAIL into that stream would corrupt it.
 func (c *AdbConnection) tunnel(sourceAddr, serial string) error {
 	conn, obs := newTunnelObserver(c.lockLog, serial, c.conn)
 	if obs != nil {
@@ -71,7 +72,7 @@ func (c *AdbConnection) tunnel(sourceAddr, serial string) error {
 			err := c.commandRouter.RelayToDevice(serial, "", conn)
 			if err != nil {
 				var refused relayRefused
-				if errors.As(err, &refused) || errors.Is(err, errUnknownDevice) {
+				if errors.As(err, &refused) {
 					if werr := WriteFail(conn, err.Error()); werr != nil {
 						slog.Debug("write error", "remote", c.conn.RemoteAddr(), "error", werr)
 					}
