@@ -18,13 +18,12 @@ jobs:
       - name: Install protoc
         uses: ./.github/actions/install-protoc
 
-      - name: Install protoc Go plugins
+      # Stubs are committed so go mod tidy (and Renovate's) can resolve them;
+      # fail if they're stale. -I ignores the generator-version header lines.
+      - name: Check protobuf stubs are up to date
         run: |
-          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
-
-      - name: Generate protobuf stubs
-        run: make proto
+          make proto
+          git diff --exit-code -I '^//.*protoc' proto/
 
       - name: Check go mod tidy
         run: |
