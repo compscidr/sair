@@ -16,6 +16,7 @@ type fakeOrchClient struct {
 	lastAcquire *pb.AcquireLockRequest
 	lastRelease *pb.ReleaseLockRequest
 	resp        *pb.AcquireLockResponse
+	err         error
 }
 
 func (f *fakeOrchClient) ReleaseLock(ctx context.Context, in *pb.ReleaseLockRequest, opts ...grpc.CallOption) (*pb.ReleaseLockResponse, error) {
@@ -49,7 +50,7 @@ func TestLockRequestsCarryRunURLAndStatus(t *testing.T) {
 
 func (f *fakeOrchClient) AcquireLock(ctx context.Context, in *pb.AcquireLockRequest, opts ...grpc.CallOption) (*pb.AcquireLockResponse, error) {
 	f.lastAcquire = in
-	return f.resp, nil
+	return f.resp, f.err
 }
 
 func TestAcquireLockSendsCount(t *testing.T) {

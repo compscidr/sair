@@ -102,6 +102,39 @@ func TestHTTPApiAcquireCountValidation(t *testing.T) {
 	}
 }
 
+func TestHTTPApiAcquireForwardsPriority(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  int32
+	}{
+		{"omitted defaults to zero", "", 0},
+		{"negative", "?priority=-1", -1},
+		{"positive", "?priority=5", 5},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// The orchestrator refuses the lock, so no scoped port is opened; we
+			// only care what the request carried.
+			fake := &fakeOrchClient{err: status.Error(codes.ResourceExhausted, "busy")}
+			router := &CommandRouter{orchClient: fake, apiKey: "test-key"}
+			api := &HTTPApi{apiKey: "test-key", scopedPortManager: NewScopedPortManager(router, nil, 0)}
+
+			req := httptest.NewRequest("POST", "/acquire"+tt.query, nil)
+			req.Header.Set("x-api-key", "test-key")
+			api.handleAcquire(httptest.NewRecorder(), req)
+
+			if fake.lastAcquire == nil {
+				t.Fatal("acquire never reached the orchestrator")
+			}
+			if got := fake.lastAcquire.Priority; got != tt.want {
+				t.Errorf("got priority %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHTTPApiReleaseMissingLockID(t *testing.T) {
 	api := &HTTPApi{
 		apiKey: "test-key",
