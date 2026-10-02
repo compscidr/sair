@@ -16,6 +16,7 @@ type fakeOrchClient struct {
 	lastAcquire *pb.AcquireLockRequest
 	lastRelease *pb.ReleaseLockRequest
 	resp        *pb.AcquireLockResponse
+	err         error
 }
 
 func (f *fakeOrchClient) ReleaseLock(ctx context.Context, in *pb.ReleaseLockRequest, opts ...grpc.CallOption) (*pb.ReleaseLockResponse, error) {
@@ -27,11 +28,14 @@ func TestLockRequestsCarryRunURLAndStatus(t *testing.T) {
 	fake := &fakeOrchClient{resp: &pb.AcquireLockResponse{LockId: "lock-1", Serials: []string{"DEVICE_A"}}}
 	router := &CommandRouter{orchClient: fake, apiKey: "test-key"}
 
-	if _, err := router.AcquireLock(nil, 1, 30, "compscidr/icmp", "https://github.com/compscidr/icmp/actions/runs/1"); err != nil {
+	if _, err := router.AcquireLock(nil, 1, 30, "compscidr/icmp", "https://github.com/compscidr/icmp/actions/runs/1", -1); err != nil {
 		t.Fatalf("AcquireLock returned error: %v", err)
 	}
 	if got := fake.lastAcquire.RunUrl; got != "https://github.com/compscidr/icmp/actions/runs/1" {
 		t.Errorf("run_url not forwarded, got %q", got)
+	}
+	if got := fake.lastAcquire.Priority; got != -1 {
+		t.Errorf("priority not forwarded, got %d", got)
 	}
 	if _, err := router.ReleaseLock("lock-1", "failure", []*pb.LockLogEntry{{Service: "shell,v2,raw:ls"}}); err != nil {
 		t.Fatalf("ReleaseLock returned error: %v", err)
@@ -46,7 +50,7 @@ func TestLockRequestsCarryRunURLAndStatus(t *testing.T) {
 
 func (f *fakeOrchClient) AcquireLock(ctx context.Context, in *pb.AcquireLockRequest, opts ...grpc.CallOption) (*pb.AcquireLockResponse, error) {
 	f.lastAcquire = in
-	return f.resp, nil
+	return f.resp, f.err
 }
 
 func TestAcquireLockSendsCount(t *testing.T) {
@@ -55,7 +59,7 @@ func TestAcquireLockSendsCount(t *testing.T) {
 	}
 	router := &CommandRouter{orchClient: fake, apiKey: "test-key"}
 
-	result, err := router.AcquireLock(nil, 2, 30, "compscidr/hello-kotlin-android", "")
+	result, err := router.AcquireLock(nil, 2, 30, "compscidr/hello-kotlin-android", "", 0)
 	if err != nil {
 		t.Fatalf("AcquireLock returned error: %v", err)
 	}
@@ -80,7 +84,7 @@ func TestAcquireLockWithSerialsSendsNoCount(t *testing.T) {
 	}
 	router := &CommandRouter{orchClient: fake, apiKey: "test-key"}
 
-	if _, err := router.AcquireLock(map[string]struct{}{"DEVICE_A": {}}, 0, 30, "", ""); err != nil {
+	if _, err := router.AcquireLock(map[string]struct{}{"DEVICE_A": {}}, 0, 30, "", "", 0); err != nil {
 		t.Fatalf("AcquireLock returned error: %v", err)
 	}
 
@@ -107,7 +111,7 @@ func TestAcquireLockRejectsInvalidCount(t *testing.T) {
 			fake := &fakeOrchClient{}
 			router := &CommandRouter{orchClient: fake, apiKey: "test-key"}
 
-			if _, err := router.AcquireLock(tt.serials, tt.count, 30, "", ""); err == nil {
+			if _, err := router.AcquireLock(tt.serials, tt.count, 30, "", "", 0); err == nil {
 				t.Error("expected an error")
 			}
 			if fake.lastAcquire != nil {
@@ -120,7 +124,7 @@ func TestAcquireLockRejectsInvalidCount(t *testing.T) {
 func TestAcquireLockCarriesProxyID(t *testing.T) {
 	fake := &fakeOrchClient{resp: &pb.AcquireLockResponse{LockId: "lock-1"}}
 	router := &CommandRouter{orchClient: fake, apiKey: "test-key", proxyID: "host-a"}
-	if _, err := router.AcquireLock(nil, 1, 30, "", ""); err != nil {
+	if _, err := router.AcquireLock(nil, 1, 30, "", "", 0); err != nil {
 		t.Fatalf("AcquireLock: %v", err)
 	}
 	if got := fake.lastAcquire.GetProxyId(); got != "host-a" {

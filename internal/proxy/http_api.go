@@ -115,9 +115,20 @@ func (a *HTTPApi) handleAcquire(w http.ResponseWriter, r *http.Request) {
 		count = parsed
 	}
 
+	// priority orders waiters when devices are busy: higher first, FIFO within a value.
+	var priority int64
+	if p := r.URL.Query().Get("priority"); p != "" {
+		parsed, err := strconv.ParseInt(p, 10, 32)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "priority parameter must be a 32-bit integer"})
+			return
+		}
+		priority = parsed
+	}
+
 	repo := r.URL.Query().Get("repo")
 	runURL := r.URL.Query().Get("run_url")
-	sp, err := a.scopedPortManager.Acquire(requestedSerials, int32(count), repo, runURL)
+	sp, err := a.scopedPortManager.Acquire(requestedSerials, int32(count), repo, runURL, int32(priority))
 	if err != nil {
 		code, msg := httpStatusForAcquireError(err)
 		slog.Error("failed to acquire", "error", err, "status", code, "message", msg)

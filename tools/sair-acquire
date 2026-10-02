@@ -14,6 +14,7 @@
 #   eval $(sair-acquire --count 2)                # lock any two free devices
 #   eval $(sair-acquire --serial DEVICE_A)        # lock specific device
 #   eval $(sair-acquire --serial DEVICE_A,DEVICE_B)  # lock multiple devices
+#   eval $(sair-acquire --priority -1)            # queue behind everyone at 0 (e.g. bot PRs)
 #
 # Environment variables:
 #   SAIR_PROXY_URL   Proxy HTTP API URL (default: http://localhost:8550)
@@ -44,6 +45,7 @@ SERIAL=""
 COUNT=""
 REPO="${GITHUB_REPOSITORY:-}"
 RUN_URL=""
+PRIORITY=""
 if [[ -n "${GITHUB_SERVER_URL:-}" && -n "${GITHUB_REPOSITORY:-}" && -n "${GITHUB_RUN_ID:-}" ]]; then
     RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
     [[ -n "${GITHUB_RUN_ATTEMPT:-}" ]] && RUN_URL="${RUN_URL}/attempts/${GITHUB_RUN_ATTEMPT}"
@@ -76,8 +78,12 @@ while [[ $# -gt 0 ]]; do
             RUN_URL="$2"
             shift 2
             ;;
+        --priority)
+            PRIORITY="$2"
+            shift 2
+            ;;
         --help|-h)
-            echo "Usage: eval \$(sair-acquire [--serial SERIAL[,SERIAL...]] [--count N] [--url URL] [--api-key KEY] [--repo OWNER/NAME] [--run-url URL])" >&2
+            echo "Usage: eval \$(sair-acquire [--serial SERIAL[,SERIAL...]] [--count N] [--url URL] [--api-key KEY] [--repo OWNER/NAME] [--run-url URL] [--priority N])" >&2
             echo "" >&2
             echo "Acquires a device lock via the SAIR ADB proxy." >&2
             echo "Blocks until devices are available." >&2
@@ -89,6 +95,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --api-key KEY     API key (default: \$SAIR_API_KEY or dev-key-123)" >&2
             echo "  --repo OWNER/NAME Repository shown on the job (default: \$GITHUB_REPOSITORY)" >&2
             echo "  --run-url URL     Link to the CI run shown on the job (default: built from GITHUB_* vars)" >&2
+            echo "  --priority N      Queue order while waiting: higher goes first, ties are FIFO (default: 0)" >&2
             exit 0
             ;;
         *)
@@ -109,6 +116,11 @@ if [[ -n "$COUNT" ]]; then
         echo "sair-acquire: ERROR: --count must be a positive integer no greater than 2147483647 (got '${COUNT}')" >&2
         exit 1
     fi
+fi
+
+if [[ -n "$PRIORITY" ]] && { [[ ! "$PRIORITY" =~ ^-?[0-9]{1,10}$ ]] || [[ "$PRIORITY" -lt -2147483648 || "$PRIORITY" -gt 2147483647 ]]; }; then
+    echo "sair-acquire: ERROR: --priority must be a 32-bit integer (got '${PRIORITY}')" >&2
+    exit 1
 fi
 
 # Build acquire URL
@@ -133,6 +145,7 @@ elif [[ -n "$COUNT" ]]; then
 fi
 [[ -n "$REPO" ]] && CURL_ARGS+=(--data-urlencode "repo=${REPO}")
 [[ -n "$RUN_URL" ]] && CURL_ARGS+=(--data-urlencode "run_url=${RUN_URL}")
+[[ -n "$PRIORITY" ]] && CURL_ARGS+=(--data-urlencode "priority=${PRIORITY}")
 RESPONSE=$(curl "${CURL_ARGS[@]}" "${ACQUIRE_URL}") || {
     echo "sair-acquire: ERROR: failed to contact proxy" >&2
     exit 1

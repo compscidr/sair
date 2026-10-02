@@ -103,8 +103,8 @@ func NewScopedPortManager(
 //
 // Pass requestedSerials for specific devices, or count for that many arbitrary
 // free devices. Passing neither locks every device in the tenant's pool.
-func (m *ScopedPortManager) Acquire(requestedSerials map[string]struct{}, count int32, repo, runURL string) (*ScopedPort, error) {
-	result, err := m.commandRouter.AcquireLock(requestedSerials, count, 30, repo, runURL)
+func (m *ScopedPortManager) Acquire(requestedSerials map[string]struct{}, count int32, repo, runURL string, priority int32) (*ScopedPort, error) {
+	result, err := m.commandRouter.AcquireLock(requestedSerials, count, 30, repo, runURL, priority)
 	if err != nil {
 		return nil, err
 	}

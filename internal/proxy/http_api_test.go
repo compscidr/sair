@@ -75,6 +75,8 @@ func TestHTTPApiAcquireCountValidation(t *testing.T) {
 		{"non-numeric count", "?count=abc", "count parameter must be a non-negative integer"},
 		{"negative count", "?count=-1", "count parameter must be a non-negative integer"},
 		{"count with serial", "?count=1&serial=DEVICE_A", "count and serial parameters are mutually exclusive"},
+		{"non-numeric priority", "?priority=high", "priority parameter must be a 32-bit integer"},
+		{"oversized priority", "?priority=2147483648", "priority parameter must be a 32-bit integer"},
 	}
 
 	for _, tt := range tests {
@@ -95,6 +97,39 @@ func TestHTTPApiAcquireCountValidation(t *testing.T) {
 			}
 			if resp["error"] != tt.wantError {
 				t.Errorf("got error %q, want %q", resp["error"], tt.wantError)
+			}
+		})
+	}
+}
+
+func TestHTTPApiAcquireForwardsPriority(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  int32
+	}{
+		{"omitted defaults to zero", "", 0},
+		{"negative", "?priority=-1", -1},
+		{"positive", "?priority=5", 5},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// The orchestrator refuses the lock, so no scoped port is opened; we
+			// only care what the request carried.
+			fake := &fakeOrchClient{err: status.Error(codes.ResourceExhausted, "busy")}
+			router := &CommandRouter{orchClient: fake, apiKey: "test-key"}
+			api := &HTTPApi{apiKey: "test-key", scopedPortManager: NewScopedPortManager(router, nil, 0)}
+
+			req := httptest.NewRequest("POST", "/acquire"+tt.query, nil)
+			req.Header.Set("x-api-key", "test-key")
+			api.handleAcquire(httptest.NewRecorder(), req)
+
+			if fake.lastAcquire == nil {
+				t.Fatal("acquire never reached the orchestrator")
+			}
+			if got := fake.lastAcquire.Priority; got != tt.want {
+				t.Errorf("got priority %d, want %d", got, tt.want)
 			}
 		})
 	}
