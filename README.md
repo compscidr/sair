@@ -53,6 +53,22 @@ sair-release
 After eval, stock `adb` automatically talks to the proxy through the scoped
 port and only sees the locked devices.
 
+When the bench sets `WIFI_SSID` on the device source, Wi-Fi is managed for
+you:
+
+- **On acquire** each phone joins the bench Wi-Fi and the acquire returns only
+  once it can reach the Internet (it fails otherwise). `--no-wifi` hands it over
+  with no network instead.
+- **On release**, and when a lock expires or is cancelled, each phone is reset:
+  every suggestion added through `adb shell` and every saved network is
+  forgotten and the radio is toggled. The next job never inherits the last
+  one's network.
+- **Mid-job**, `sair-wifi off` / `sair-wifi on` drop and restore the network
+  without the job knowing the credentials.
+
+Suggestions a test app registers under its own uid are not touched; the app
+cleans those up itself. Devices relayed from another proxy are left alone.
+
 ## Architecture
 
 ```
@@ -111,6 +127,10 @@ modification.
 |---|---|---|
 | `DEVICE_SOURCE_PORT` | `8080` | gRPC listen port |
 | `ADB_PORT` | `5038` | Port of the real ADB server |
+| `WIFI_SSID` | — | Bench Wi-Fi joined on acquire and reset on release; unset = Wi-Fi not managed |
+| `WIFI_PASSPHRASE` | — | WPA2 passphrase (unset = open network) |
+| `WIFI_PING_HOST` | `8.8.8.8` | Pinged to confirm a phone reached the Internet |
+| `WIFI_CONNECT_TIMEOUT_SECONDS` | `60` | How long acquire waits for that ping |
 
 Verify it's working:
 
@@ -145,8 +165,8 @@ A lock can include devices connected to another of your proxies (or shared with 
 ### Tools
 
 On GitHub Actions, `uses: compscidr/sair@v0.0.21` (or any later release tag)
-puts both tools on `PATH`; see the workflow example below. Elsewhere, copy
-`tools/sair-acquire` and `tools/sair-release` into your CI project or add this
+puts the tools on `PATH`; see the workflow example below. Elsewhere, copy
+`tools/sair-acquire`, `tools/sair-release` and `tools/sair-wifi` into your CI project or add this
 repo's `tools/` directory to `PATH`.
 
 **Acquire** a device lock (blocks until devices are available):
@@ -189,6 +209,13 @@ eval $(sair-acquire --count 2)
 # Queue behind every default-priority job while devices are busy (higher
 # goes first, ties are FIFO, default 0) — e.g. so bot PRs don't hold up humans
 eval $(sair-acquire --priority -1)
+
+# Phones with no network (default: joined to the bench Wi-Fi)
+eval $(sair-acquire --no-wifi)
+
+# Drop and restore the network mid-job (all locked devices, or --serial)
+sair-wifi off
+sair-wifi on
 
 # Point to a remote proxy
 eval $(sair-acquire --url http://proxy-host:8550 --api-key my-key)

@@ -22,6 +22,111 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type WifiRequest_State int32
+
+const (
+	// Forget every shell-added suggestion and saved network, then toggle the
+	// radio: on, nothing registered, not associated. Used on release.
+	WifiRequest_RESET WifiRequest_State = 0
+	// Forget suggestions and saved networks; the radio stays on.
+	WifiRequest_OFF WifiRequest_State = 1
+	// Suggest the bench network and wait until the device reaches the Internet.
+	WifiRequest_ON WifiRequest_State = 2
+)
+
+// Enum value maps for WifiRequest_State.
+var (
+	WifiRequest_State_name = map[int32]string{
+		0: "RESET",
+		1: "OFF",
+		2: "ON",
+	}
+	WifiRequest_State_value = map[string]int32{
+		"RESET": 0,
+		"OFF":   1,
+		"ON":    2,
+	}
+)
+
+func (x WifiRequest_State) Enum() *WifiRequest_State {
+	p := new(WifiRequest_State)
+	*p = x
+	return p
+}
+
+func (x WifiRequest_State) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (WifiRequest_State) Descriptor() protoreflect.EnumDescriptor {
+	return file_proto_devicesource_devicesource_proto_enumTypes[0].Descriptor()
+}
+
+func (WifiRequest_State) Type() protoreflect.EnumType {
+	return &file_proto_devicesource_devicesource_proto_enumTypes[0]
+}
+
+func (x WifiRequest_State) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use WifiRequest_State.Descriptor instead.
+func (WifiRequest_State) EnumDescriptor() ([]byte, []int) {
+	return file_proto_devicesource_devicesource_proto_rawDescGZIP(), []int{0, 0}
+}
+
+type WifiRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Serial        string                 `protobuf:"bytes,1,opt,name=serial,proto3" json:"serial,omitempty"`
+	State         WifiRequest_State      `protobuf:"varint,2,opt,name=state,proto3,enum=devicesource.WifiRequest_State" json:"state,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WifiRequest) Reset() {
+	*x = WifiRequest{}
+	mi := &file_proto_devicesource_devicesource_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WifiRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WifiRequest) ProtoMessage() {}
+
+func (x *WifiRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_devicesource_devicesource_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WifiRequest.ProtoReflect.Descriptor instead.
+func (*WifiRequest) Descriptor() ([]byte, []int) {
+	return file_proto_devicesource_devicesource_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *WifiRequest) GetSerial() string {
+	if x != nil {
+		return x.Serial
+	}
+	return ""
+}
+
+func (x *WifiRequest) GetState() WifiRequest_State {
+	if x != nil {
+		return x.State
+	}
+	return WifiRequest_RESET
+}
+
 type Devices struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Devices       []*Device              `protobuf:"bytes,1,rep,name=devices,proto3" json:"devices,omitempty"`
@@ -31,7 +136,7 @@ type Devices struct {
 
 func (x *Devices) Reset() {
 	*x = Devices{}
-	mi := &file_proto_devicesource_devicesource_proto_msgTypes[0]
+	mi := &file_proto_devicesource_devicesource_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -43,7 +148,7 @@ func (x *Devices) String() string {
 func (*Devices) ProtoMessage() {}
 
 func (x *Devices) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_devicesource_devicesource_proto_msgTypes[0]
+	mi := &file_proto_devicesource_devicesource_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -56,7 +161,7 @@ func (x *Devices) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Devices.ProtoReflect.Descriptor instead.
 func (*Devices) Descriptor() ([]byte, []int) {
-	return file_proto_devicesource_devicesource_proto_rawDescGZIP(), []int{0}
+	return file_proto_devicesource_devicesource_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *Devices) GetDevices() []*Device {
@@ -79,7 +184,7 @@ type Device struct {
 
 func (x *Device) Reset() {
 	*x = Device{}
-	mi := &file_proto_devicesource_devicesource_proto_msgTypes[1]
+	mi := &file_proto_devicesource_devicesource_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -91,7 +196,7 @@ func (x *Device) String() string {
 func (*Device) ProtoMessage() {}
 
 func (x *Device) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_devicesource_devicesource_proto_msgTypes[1]
+	mi := &file_proto_devicesource_devicesource_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -104,7 +209,7 @@ func (x *Device) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Device.ProtoReflect.Descriptor instead.
 func (*Device) Descriptor() ([]byte, []int) {
-	return file_proto_devicesource_devicesource_proto_rawDescGZIP(), []int{1}
+	return file_proto_devicesource_devicesource_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *Device) GetSerial() string {
@@ -151,7 +256,7 @@ type Command struct {
 
 func (x *Command) Reset() {
 	*x = Command{}
-	mi := &file_proto_devicesource_devicesource_proto_msgTypes[2]
+	mi := &file_proto_devicesource_devicesource_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -163,7 +268,7 @@ func (x *Command) String() string {
 func (*Command) ProtoMessage() {}
 
 func (x *Command) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_devicesource_devicesource_proto_msgTypes[2]
+	mi := &file_proto_devicesource_devicesource_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -176,7 +281,7 @@ func (x *Command) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Command.ProtoReflect.Descriptor instead.
 func (*Command) Descriptor() ([]byte, []int) {
-	return file_proto_devicesource_devicesource_proto_rawDescGZIP(), []int{2}
+	return file_proto_devicesource_devicesource_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *Command) GetCmd() string {
@@ -197,7 +302,7 @@ type DeviceCommand struct {
 
 func (x *DeviceCommand) Reset() {
 	*x = DeviceCommand{}
-	mi := &file_proto_devicesource_devicesource_proto_msgTypes[3]
+	mi := &file_proto_devicesource_devicesource_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -209,7 +314,7 @@ func (x *DeviceCommand) String() string {
 func (*DeviceCommand) ProtoMessage() {}
 
 func (x *DeviceCommand) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_devicesource_devicesource_proto_msgTypes[3]
+	mi := &file_proto_devicesource_devicesource_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -222,7 +327,7 @@ func (x *DeviceCommand) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeviceCommand.ProtoReflect.Descriptor instead.
 func (*DeviceCommand) Descriptor() ([]byte, []int) {
-	return file_proto_devicesource_devicesource_proto_rawDescGZIP(), []int{3}
+	return file_proto_devicesource_devicesource_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *DeviceCommand) GetSerial() string {
@@ -258,7 +363,7 @@ type CommandResult struct {
 
 func (x *CommandResult) Reset() {
 	*x = CommandResult{}
-	mi := &file_proto_devicesource_devicesource_proto_msgTypes[4]
+	mi := &file_proto_devicesource_devicesource_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -270,7 +375,7 @@ func (x *CommandResult) String() string {
 func (*CommandResult) ProtoMessage() {}
 
 func (x *CommandResult) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_devicesource_devicesource_proto_msgTypes[4]
+	mi := &file_proto_devicesource_devicesource_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -283,7 +388,7 @@ func (x *CommandResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandResult.ProtoReflect.Descriptor instead.
 func (*CommandResult) Descriptor() ([]byte, []int) {
-	return file_proto_devicesource_devicesource_proto_rawDescGZIP(), []int{4}
+	return file_proto_devicesource_devicesource_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *CommandResult) GetPlaceInQueue() int32 {
@@ -327,7 +432,7 @@ type ForwardData struct {
 
 func (x *ForwardData) Reset() {
 	*x = ForwardData{}
-	mi := &file_proto_devicesource_devicesource_proto_msgTypes[5]
+	mi := &file_proto_devicesource_devicesource_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -339,7 +444,7 @@ func (x *ForwardData) String() string {
 func (*ForwardData) ProtoMessage() {}
 
 func (x *ForwardData) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_devicesource_devicesource_proto_msgTypes[5]
+	mi := &file_proto_devicesource_devicesource_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -352,7 +457,7 @@ func (x *ForwardData) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForwardData.ProtoReflect.Descriptor instead.
 func (*ForwardData) Descriptor() ([]byte, []int) {
-	return file_proto_devicesource_devicesource_proto_rawDescGZIP(), []int{5}
+	return file_proto_devicesource_devicesource_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ForwardData) GetPayload() isForwardData_Payload {
@@ -406,7 +511,7 @@ type ForwardSetup struct {
 
 func (x *ForwardSetup) Reset() {
 	*x = ForwardSetup{}
-	mi := &file_proto_devicesource_devicesource_proto_msgTypes[6]
+	mi := &file_proto_devicesource_devicesource_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -418,7 +523,7 @@ func (x *ForwardSetup) String() string {
 func (*ForwardSetup) ProtoMessage() {}
 
 func (x *ForwardSetup) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_devicesource_devicesource_proto_msgTypes[6]
+	mi := &file_proto_devicesource_devicesource_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -431,7 +536,7 @@ func (x *ForwardSetup) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForwardSetup.ProtoReflect.Descriptor instead.
 func (*ForwardSetup) Descriptor() ([]byte, []int) {
-	return file_proto_devicesource_devicesource_proto_rawDescGZIP(), []int{6}
+	return file_proto_devicesource_devicesource_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ForwardSetup) GetSerial() string {
@@ -452,7 +557,14 @@ var File_proto_devicesource_devicesource_proto protoreflect.FileDescriptor
 
 const file_proto_devicesource_devicesource_proto_rawDesc = "" +
 	"\n" +
-	"%proto/devicesource/devicesource.proto\x12\fdevicesource\x1a\x1bgoogle/protobuf/empty.proto\"9\n" +
+	"%proto/devicesource/devicesource.proto\x12\fdevicesource\x1a\x1bgoogle/protobuf/empty.proto\"\x81\x01\n" +
+	"\vWifiRequest\x12\x16\n" +
+	"\x06serial\x18\x01 \x01(\tR\x06serial\x125\n" +
+	"\x05state\x18\x02 \x01(\x0e2\x1f.devicesource.WifiRequest.StateR\x05state\"#\n" +
+	"\x05State\x12\t\n" +
+	"\x05RESET\x10\x00\x12\a\n" +
+	"\x03OFF\x10\x01\x12\x06\n" +
+	"\x02ON\x10\x02\"9\n" +
 	"\aDevices\x12.\n" +
 	"\adevices\x18\x01 \x03(\v2\x14.devicesource.DeviceR\adevices\"\x86\x01\n" +
 	"\x06Device\x12\x16\n" +
@@ -478,13 +590,14 @@ const file_proto_devicesource_devicesource_proto_rawDesc = "" +
 	"\apayload\"O\n" +
 	"\fForwardSetup\x12\x16\n" +
 	"\x06serial\x18\x01 \x01(\tR\x06serial\x12'\n" +
-	"\x0finitial_command\x18\x02 \x01(\tR\x0einitialCommand2\xb4\x02\n" +
+	"\x0finitial_command\x18\x02 \x01(\tR\x0einitialCommand2\xf4\x02\n" +
 	"\fDeviceSource\x12=\n" +
 	"\n" +
 	"GetDevices\x12\x16.google.protobuf.Empty\x1a\x15.devicesource.Devices\"\x00\x12H\n" +
 	"\x0eEnqueueCommand\x12\x15.devicesource.Command\x1a\x1b.devicesource.CommandResult\"\x000\x01\x12L\n" +
 	"\fExecOnDevice\x12\x1b.devicesource.DeviceCommand\x1a\x1b.devicesource.CommandResult\"\x000\x01\x12M\n" +
-	"\x0fForwardToDevice\x12\x19.devicesource.ForwardData\x1a\x19.devicesource.ForwardData\"\x00(\x010\x01B.Z,github.com/compscidr/sair/proto/devicesourceb\x06proto3"
+	"\x0fForwardToDevice\x12\x19.devicesource.ForwardData\x1a\x19.devicesource.ForwardData\"\x00(\x010\x01\x12>\n" +
+	"\aSetWifi\x12\x19.devicesource.WifiRequest\x1a\x16.google.protobuf.Empty\"\x00B.Z,github.com/compscidr/sair/proto/devicesourceb\x06proto3"
 
 var (
 	file_proto_devicesource_devicesource_proto_rawDescOnce sync.Once
@@ -498,33 +611,39 @@ func file_proto_devicesource_devicesource_proto_rawDescGZIP() []byte {
 	return file_proto_devicesource_devicesource_proto_rawDescData
 }
 
-var file_proto_devicesource_devicesource_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_proto_devicesource_devicesource_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_proto_devicesource_devicesource_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_proto_devicesource_devicesource_proto_goTypes = []any{
-	(*Devices)(nil),       // 0: devicesource.Devices
-	(*Device)(nil),        // 1: devicesource.Device
-	(*Command)(nil),       // 2: devicesource.Command
-	(*DeviceCommand)(nil), // 3: devicesource.DeviceCommand
-	(*CommandResult)(nil), // 4: devicesource.CommandResult
-	(*ForwardData)(nil),   // 5: devicesource.ForwardData
-	(*ForwardSetup)(nil),  // 6: devicesource.ForwardSetup
-	(*emptypb.Empty)(nil), // 7: google.protobuf.Empty
+	(WifiRequest_State)(0), // 0: devicesource.WifiRequest.State
+	(*WifiRequest)(nil),    // 1: devicesource.WifiRequest
+	(*Devices)(nil),        // 2: devicesource.Devices
+	(*Device)(nil),         // 3: devicesource.Device
+	(*Command)(nil),        // 4: devicesource.Command
+	(*DeviceCommand)(nil),  // 5: devicesource.DeviceCommand
+	(*CommandResult)(nil),  // 6: devicesource.CommandResult
+	(*ForwardData)(nil),    // 7: devicesource.ForwardData
+	(*ForwardSetup)(nil),   // 8: devicesource.ForwardSetup
+	(*emptypb.Empty)(nil),  // 9: google.protobuf.Empty
 }
 var file_proto_devicesource_devicesource_proto_depIdxs = []int32{
-	1, // 0: devicesource.Devices.devices:type_name -> devicesource.Device
-	6, // 1: devicesource.ForwardData.setup:type_name -> devicesource.ForwardSetup
-	7, // 2: devicesource.DeviceSource.GetDevices:input_type -> google.protobuf.Empty
-	2, // 3: devicesource.DeviceSource.EnqueueCommand:input_type -> devicesource.Command
-	3, // 4: devicesource.DeviceSource.ExecOnDevice:input_type -> devicesource.DeviceCommand
-	5, // 5: devicesource.DeviceSource.ForwardToDevice:input_type -> devicesource.ForwardData
-	0, // 6: devicesource.DeviceSource.GetDevices:output_type -> devicesource.Devices
-	4, // 7: devicesource.DeviceSource.EnqueueCommand:output_type -> devicesource.CommandResult
-	4, // 8: devicesource.DeviceSource.ExecOnDevice:output_type -> devicesource.CommandResult
-	5, // 9: devicesource.DeviceSource.ForwardToDevice:output_type -> devicesource.ForwardData
-	6, // [6:10] is the sub-list for method output_type
-	2, // [2:6] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	0, // 0: devicesource.WifiRequest.state:type_name -> devicesource.WifiRequest.State
+	3, // 1: devicesource.Devices.devices:type_name -> devicesource.Device
+	8, // 2: devicesource.ForwardData.setup:type_name -> devicesource.ForwardSetup
+	9, // 3: devicesource.DeviceSource.GetDevices:input_type -> google.protobuf.Empty
+	4, // 4: devicesource.DeviceSource.EnqueueCommand:input_type -> devicesource.Command
+	5, // 5: devicesource.DeviceSource.ExecOnDevice:input_type -> devicesource.DeviceCommand
+	7, // 6: devicesource.DeviceSource.ForwardToDevice:input_type -> devicesource.ForwardData
+	1, // 7: devicesource.DeviceSource.SetWifi:input_type -> devicesource.WifiRequest
+	2, // 8: devicesource.DeviceSource.GetDevices:output_type -> devicesource.Devices
+	6, // 9: devicesource.DeviceSource.EnqueueCommand:output_type -> devicesource.CommandResult
+	6, // 10: devicesource.DeviceSource.ExecOnDevice:output_type -> devicesource.CommandResult
+	7, // 11: devicesource.DeviceSource.ForwardToDevice:output_type -> devicesource.ForwardData
+	9, // 12: devicesource.DeviceSource.SetWifi:output_type -> google.protobuf.Empty
+	8, // [8:13] is the sub-list for method output_type
+	3, // [3:8] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_proto_devicesource_devicesource_proto_init() }
@@ -532,7 +651,7 @@ func file_proto_devicesource_devicesource_proto_init() {
 	if File_proto_devicesource_devicesource_proto != nil {
 		return
 	}
-	file_proto_devicesource_devicesource_proto_msgTypes[5].OneofWrappers = []any{
+	file_proto_devicesource_devicesource_proto_msgTypes[6].OneofWrappers = []any{
 		(*ForwardData_Setup)(nil),
 		(*ForwardData_Data)(nil),
 	}
@@ -541,13 +660,14 @@ func file_proto_devicesource_devicesource_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_devicesource_devicesource_proto_rawDesc), len(file_proto_devicesource_devicesource_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   7,
+			NumEnums:      1,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_proto_devicesource_devicesource_proto_goTypes,
 		DependencyIndexes: file_proto_devicesource_devicesource_proto_depIdxs,
+		EnumInfos:         file_proto_devicesource_devicesource_proto_enumTypes,
 		MessageInfos:      file_proto_devicesource_devicesource_proto_msgTypes,
 	}.Build()
 	File_proto_devicesource_devicesource_proto = out.File

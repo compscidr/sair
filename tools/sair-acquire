@@ -15,6 +15,7 @@
 #   eval $(sair-acquire --serial DEVICE_A)        # lock specific device
 #   eval $(sair-acquire --serial DEVICE_A,DEVICE_B)  # lock multiple devices
 #   eval $(sair-acquire --priority -1)            # queue behind everyone at 0 (e.g. bot PRs)
+#   eval $(sair-acquire --no-wifi)                # phones with no network (default: on bench Wi-Fi)
 #
 # Environment variables:
 #   SAIR_PROXY_URL   Proxy HTTP API URL (default: http://localhost:8550)
@@ -46,6 +47,7 @@ COUNT=""
 REPO="${GITHUB_REPOSITORY:-}"
 RUN_URL=""
 PRIORITY=""
+WIFI="on"
 if [[ -n "${GITHUB_SERVER_URL:-}" && -n "${GITHUB_REPOSITORY:-}" && -n "${GITHUB_RUN_ID:-}" ]]; then
     RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
     [[ -n "${GITHUB_RUN_ATTEMPT:-}" ]] && RUN_URL="${RUN_URL}/attempts/${GITHUB_RUN_ATTEMPT}"
@@ -82,8 +84,12 @@ while [[ $# -gt 0 ]]; do
             PRIORITY="$2"
             shift 2
             ;;
+        --no-wifi)
+            WIFI="off"
+            shift
+            ;;
         --help|-h)
-            echo "Usage: eval \$(sair-acquire [--serial SERIAL[,SERIAL...]] [--count N] [--url URL] [--api-key KEY] [--repo OWNER/NAME] [--run-url URL] [--priority N])" >&2
+            echo "Usage: eval \$(sair-acquire [--serial SERIAL[,SERIAL...]] [--count N] [--url URL] [--api-key KEY] [--repo OWNER/NAME] [--run-url URL] [--priority N] [--no-wifi])" >&2
             echo "" >&2
             echo "Acquires a device lock via the SAIR ADB proxy." >&2
             echo "Blocks until devices are available." >&2
@@ -96,6 +102,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --repo OWNER/NAME Repository shown on the job (default: \$GITHUB_REPOSITORY)" >&2
             echo "  --run-url URL     Link to the CI run shown on the job (default: built from GITHUB_* vars)" >&2
             echo "  --priority N      Queue order while waiting: higher goes first, ties are FIFO (default: 0)" >&2
+            echo "  --no-wifi         Hand over phones with no Wi-Fi network instead of on the bench Wi-Fi" >&2
             exit 0
             ;;
         *)
@@ -137,7 +144,7 @@ fi
 
 # POST /acquire (blocks until available)
 # Use --data-urlencode to safely encode serial (may contain ':' for TCP devices)
-CURL_ARGS=(-s -X POST -H "x-api-key: ${API_KEY}" -w '\n%{http_code}' -G)
+CURL_ARGS=(-s -X POST -H "x-api-key: ${API_KEY}" -w '\n%{http_code}' -G --data-urlencode "wifi=${WIFI}")
 if [[ -n "$SERIAL" ]]; then
     CURL_ARGS+=(--data-urlencode "serial=${SERIAL}")
 elif [[ -n "$COUNT" ]]; then

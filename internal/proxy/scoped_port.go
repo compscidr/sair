@@ -8,7 +8,10 @@ import (
 	"sync"
 	"time"
 
+	dspb "github.com/compscidr/sair/proto/devicesource"
 	pb "github.com/compscidr/sair/proto/orchestrator"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // ScopedPort represents a scoped ADB listener port for a specific lock.
@@ -79,6 +82,12 @@ type ScopedPortManager struct {
 	// How often buffered log entries are shipped on the session. Tests shorten it.
 	flushInterval time.Duration
 	scopedPorts   map[string]*ScopedPort
+	// setWifi is commandRouter.SetWifi; tests swap it.
+	setWifi func(serial string, state dspb.WifiRequest_State) error
+	// wifiMu orders Wi-Fi changes so a released lock's reset can never land
+	// after the next lock's connect on the same device.
+	// ponytail: one lock for every device, per-serial locks if benches grow large.
+	wifiMu sync.Mutex
 }
 
 func NewScopedPortManager(
@@ -95,6 +104,7 @@ func NewScopedPortManager(
 		heartbeatIntervalSecs: heartbeatIntervalSecs,
 		flushInterval:         time.Second,
 		scopedPorts:           make(map[string]*ScopedPort),
+		setWifi:               commandRouter.SetWifi,
 	}
 }
 
@@ -103,7 +113,11 @@ func NewScopedPortManager(
 //
 // Pass requestedSerials for specific devices, or count for that many arbitrary
 // free devices. Passing neither locks every device in the tenant's pool.
-func (m *ScopedPortManager) Acquire(requestedSerials map[string]struct{}, count int32, repo, runURL string, priority int32) (*ScopedPort, error) {
+//
+// With wifi, every local device is joined to the bench Wi-Fi and reaches the
+// Internet before Acquire returns; if one does not, the lock is released and
+// the error returned. A bench without managed Wi-Fi skips this.
+func (m *ScopedPortManager) Acquire(requestedSerials map[string]struct{}, count int32, repo, runURL string, priority int32, wifi bool) (*ScopedPort, error) {
 	result, err := m.commandRouter.AcquireLock(requestedSerials, count, 30, repo, runURL, priority)
 	if err != nil {
 		return nil, err
@@ -117,7 +131,80 @@ func (m *ScopedPortManager) Acquire(requestedSerials map[string]struct{}, count 
 		}
 		return nil, err
 	}
+	if wifi {
+		if err := m.SetWifi(sp.LockID, nil, true); err != nil && !wifiUnmanaged(err) {
+			m.Release(sp.LockID, "error")
+			return nil, err
+		}
+	}
 	return sp, nil
+}
+
+var (
+	errUnknownLock = errors.New("unknown lock_id")
+	errNotInLock   = errors.New("serial is not part of this lock")
+)
+
+// SetWifi turns Wi-Fi on or off for serials of a lock, or for all of its
+// local devices when serials is empty. Devices relayed from another proxy are
+// not supported: naming one is an error, and "all" skips them.
+func (m *ScopedPortManager) SetWifi(lockID string, serials []string, on bool) error {
+	m.mu.Lock()
+	sp := m.scopedPorts[lockID]
+	m.mu.Unlock()
+	if sp == nil {
+		return errUnknownLock
+	}
+	if len(serials) == 0 {
+		for s := range sp.Serials {
+			if _, remote := sp.RemoteDevices[s]; !remote {
+				serials = append(serials, s)
+			}
+		}
+	}
+	for _, s := range serials {
+		if _, ok := sp.Serials[s]; !ok {
+			return fmt.Errorf("%w: %s", errNotInLock, s)
+		}
+	}
+	state := dspb.WifiRequest_OFF
+	if on {
+		state = dspb.WifiRequest_ON
+	}
+	m.wifiMu.Lock()
+	defer m.wifiMu.Unlock()
+	for _, s := range serials {
+		if err := m.setWifi(s, state); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// resetWifi returns a closed port's devices to the Wi-Fi baseline. A device a
+// newer lock already holds is skipped: its connect owns the state now.
+func (m *ScopedPortManager) resetWifi(sp *ScopedPort) {
+	m.wifiMu.Lock()
+	defer m.wifiMu.Unlock()
+	for serial := range sp.Serials {
+		if _, remote := sp.RemoteDevices[serial]; remote || m.heldByAnyPort(serial) {
+			continue
+		}
+		if err := m.setWifi(serial, dspb.WifiRequest_RESET); err != nil && !wifiUnmanaged(err) && status.Code(err) != codes.NotFound {
+			slog.Warn("Wi-Fi reset failed", "serial", serial, "lockId", sp.LockID, "error", err)
+		}
+	}
+}
+
+func (m *ScopedPortManager) heldByAnyPort(serial string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, sp := range m.scopedPorts {
+		if _, ok := sp.Serials[serial]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // CreateScopedPort creates a scoped port for an already-acquired lock.
@@ -197,6 +284,9 @@ func (m *ScopedPortManager) CloseScopedPort(lockID string) bool {
 	<-sp.keepaliveDone // wait for runKeepalive to stop touching sp.Log before a caller drains it
 
 	slog.Info("closed scoped port", "port", sp.Port, "lockId", lockID)
+	// Every way a lock ends comes through here, so this is where a device is
+	// put back to baseline: before Release hands it back to the orchestrator.
+	m.resetWifi(sp)
 	return true
 }
 

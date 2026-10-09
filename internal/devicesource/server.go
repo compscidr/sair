@@ -26,6 +26,12 @@ var serialPattern = regexp.MustCompile(`^[a-zA-Z0-9._:()\-]+$`)
 type Server struct {
 	pb.UnimplementedDeviceSourceServer
 	adbPort int
+
+	// Bench Wi-Fi (see SetWifi). An empty SSID means Wi-Fi is not managed.
+	wifiSSID, wifiPassphrase, wifiPingHost string
+	wifiTimeout                            time.Duration
+	// shell runs a command line on a device; adbShell, swapped in tests.
+	shell func(ctx context.Context, serial, command string) (string, error)
 }
 
 func NewServer() *Server {
@@ -35,7 +41,21 @@ func NewServer() *Server {
 			port = p
 		}
 	}
-	return &Server{adbPort: port}
+	s := &Server{
+		adbPort:        port,
+		wifiSSID:       os.Getenv("WIFI_SSID"),
+		wifiPassphrase: os.Getenv("WIFI_PASSPHRASE"),
+		wifiPingHost:   "8.8.8.8",
+		wifiTimeout:    60 * time.Second,
+	}
+	if v := os.Getenv("WIFI_PING_HOST"); v != "" {
+		s.wifiPingHost = v
+	}
+	if v, err := strconv.Atoi(os.Getenv("WIFI_CONNECT_TIMEOUT_SECONDS")); err == nil && v > 0 {
+		s.wifiTimeout = time.Duration(v) * time.Second
+	}
+	s.shell = s.adbShell
+	return s
 }
 
 func (s *Server) adbCmd(args ...string) *exec.Cmd {

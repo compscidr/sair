@@ -168,6 +168,9 @@ func TestHTTPStatusForAcquireError(t *testing.T) {
 		{"bad request", status.Error(codes.InvalidArgument, "count and serials are mutually exclusive"), http.StatusBadRequest, "count and serials are mutually exclusive"},
 		{"forbidden", status.Error(codes.PermissionDenied, "nope"), http.StatusForbidden, "nope"},
 		{"timeout", status.Error(codes.DeadlineExceeded, "deadline"), http.StatusGatewayTimeout, "deadline"},
+		{"wifi unmanaged", status.Error(codes.FailedPrecondition, "WIFI_SSID is not set"), http.StatusNotImplemented, "WIFI_SSID is not set"},
+		{"old device source", status.Error(codes.Unimplemented, "unknown method SetWifi"), http.StatusNotImplemented, "unknown method SetWifi"},
+		{"relayed device", status.Error(codes.NotFound, "device R is not attached to this proxy"), http.StatusNotFound, "device R is not attached to this proxy"},
 		{"other grpc", status.Error(codes.Unavailable, "lock manager not configured"), http.StatusInternalServerError, "lock manager not configured"},
 		{"plain error", errors.New("boom"), http.StatusInternalServerError, "boom"},
 	}
