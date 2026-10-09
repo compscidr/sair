@@ -63,6 +63,14 @@ jobs:
 
       - uses: docker/setup-buildx-action@v4
 
+      # Pull base images as a logged-in user: anonymous pulls share the
+      # runner IP's rate limit and fail with 429.
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: compscidr
+          password: ${{ secrets.DOCKER_PAT }}
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v4
         with:

@@ -41,8 +41,20 @@ jobs:
 
   docker-build:
     runs-on: ubuntu-latest
+    env:
+      DOCKER_PAT: ${{ secrets.DOCKER_PAT }}
     steps:
       - uses: actions/checkout@v7
+
+      # Pull base images as a logged-in user: anonymous pulls share the
+      # runner IP's rate limit and fail with 429. Skipped where the secret is
+      # unavailable (fork PRs), which falls back to anonymous pulls.
+      - name: Log in to Docker Hub
+        if: env.DOCKER_PAT != ''
+        uses: docker/login-action@v4
+        with:
+          username: compscidr
+          password: ${{ secrets.DOCKER_PAT }}
 
       - name: Build Docker images
         run: |
