@@ -12,10 +12,12 @@ import (
 	dspb "github.com/compscidr/sair/proto/devicesource"
 	pb "github.com/compscidr/sair/proto/orchestrator"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 // LockResult holds the result of a lock acquisition.
@@ -229,6 +231,35 @@ func (r *CommandRouter) ForwardToDevice(sourceAddr, serial, command string, conn
 		return nil
 	}
 	return err
+}
+
+// SetWifi sets a device's Wi-Fi through the device source it is attached to.
+// NotFound for a device this proxy has no source for (e.g. a relayed one).
+func (r *CommandRouter) SetWifi(serial string, state dspb.WifiRequest_State) error {
+	addr := ""
+	if r.ResolveSource != nil {
+		addr = r.ResolveSource(serial)
+	}
+	if addr == "" {
+		return status.Errorf(codes.NotFound, "device %s is not attached to this proxy", serial)
+	}
+	client, err := r.getOrCreateDSClient(addr)
+	if err != nil {
+		return err
+	}
+	// The ON wait is bounded by the device source (60s by default); this only
+	// guards against a source that never answers.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	_, err = client.SetWifi(ctx, &dspb.WifiRequest{Serial: serial, State: state})
+	return err
+}
+
+// wifiUnmanaged reports whether a SetWifi error means the bench does not
+// manage Wi-Fi (no WIFI_SSID, or a device source that predates SetWifi).
+func wifiUnmanaged(err error) bool {
+	c := status.Code(err)
+	return c == codes.FailedPrecondition || c == codes.Unimplemented
 }
 
 // Orchestrator operations — lock management only

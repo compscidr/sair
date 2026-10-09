@@ -13,6 +13,24 @@ service DeviceSource {
   // Bidirectional raw byte forwarding to a device via the real ADB server.
   // Used for protocols like sync: that the proxy cannot interpret.
   rpc ForwardToDevice(stream ForwardData) returns (stream ForwardData) {}
+  // Set a device's Wi-Fi to a known state using the bench network configured
+  // on this device source (WIFI_SSID / WIFI_PASSPHRASE). FailedPrecondition
+  // when no network is configured: the bench does not manage Wi-Fi.
+  rpc SetWifi(WifiRequest) returns (google.protobuf.Empty) {}
+}
+
+message WifiRequest {
+  enum State {
+    // Forget every shell-added suggestion and saved network, then toggle the
+    // radio: on, nothing registered, not associated. Used on release.
+    RESET = 0;
+    // Forget suggestions and saved networks; the radio stays on.
+    OFF = 1;
+    // Suggest the bench network and wait until the device reaches the Internet.
+    ON = 2;
+  }
+  string serial = 1;
+  State state = 2;
 }
 
 message Devices {

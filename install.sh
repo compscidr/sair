@@ -92,7 +92,7 @@ tar xzf "${TMP}/${ARCHIVE}" -C "$TMP"
 
 # Install
 mkdir -p "$INSTALL_DIR"
-for bin in sair-device-source sair-proxy sair-acquire sair-release; do
+for bin in sair-device-source sair-proxy sair-acquire sair-release sair-wifi; do
     if [[ -f "${TMP}/${bin}" ]]; then
         install -m 755 "${TMP}/${bin}" "${INSTALL_DIR}/${bin}"
     fi
@@ -100,7 +100,7 @@ done
 
 echo ""
 echo "Installed:"
-for bin in sair-device-source sair-proxy sair-acquire sair-release; do
+for bin in sair-device-source sair-proxy sair-acquire sair-release sair-wifi; do
     if [[ -f "${INSTALL_DIR}/${bin}" ]]; then
         echo "  ${INSTALL_DIR}/${bin}"
     fi

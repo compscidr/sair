@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -38,6 +39,7 @@ func NewHTTPApi(scopedPortManager *ScopedPortManager, deviceListTracker *DeviceL
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /acquire", api.handleAcquire)
 	mux.HandleFunc("POST /release", api.handleRelease)
+	mux.HandleFunc("POST /wifi", api.handleWifi)
 	mux.HandleFunc("GET /status", api.handleStatus)
 	mux.HandleFunc("POST /internal/devices", api.handleRegisterDevices)
 
@@ -126,9 +128,17 @@ func (a *HTTPApi) handleAcquire(w http.ResponseWriter, r *http.Request) {
 		priority = parsed
 	}
 
+	// wifi=on (the default) hands over devices already on the bench Wi-Fi;
+	// wifi=off hands them over in the release baseline: no network at all.
+	wifi, ok := parseWifiState(r.URL.Query().Get("wifi"), true)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "wifi parameter must be on or off"})
+		return
+	}
+
 	repo := r.URL.Query().Get("repo")
 	runURL := r.URL.Query().Get("run_url")
-	sp, err := a.scopedPortManager.Acquire(requestedSerials, int32(count), repo, runURL, int32(priority))
+	sp, err := a.scopedPortManager.Acquire(requestedSerials, int32(count), repo, runURL, int32(priority), wifi)
 	if err != nil {
 		code, msg := httpStatusForAcquireError(err)
 		slog.Error("failed to acquire", "error", err, "status", code, "message", msg)
@@ -165,6 +175,10 @@ func httpStatusForAcquireError(err error) (int, string) {
 		return http.StatusForbidden, st.Message()
 	case codes.DeadlineExceeded:
 		return http.StatusGatewayTimeout, st.Message()
+	case codes.FailedPrecondition, codes.Unimplemented:
+		return http.StatusNotImplemented, st.Message()
+	case codes.NotFound:
+		return http.StatusNotFound, st.Message()
 	default:
 		return http.StatusInternalServerError, st.Message()
 	}
@@ -187,6 +201,59 @@ func (a *HTTPApi) handleRelease(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "released"})
 	} else {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown lock_id"})
+	}
+}
+
+// parseWifiState reads an on/off parameter; empty means def.
+func parseWifiState(v string, def bool) (on, ok bool) {
+	switch v {
+	case "":
+		return def, true
+	case "on":
+		return true, true
+	case "off":
+		return false, true
+	}
+	return false, false
+}
+
+// handleWifi turns Wi-Fi on or off on a lock's devices mid-job, using the
+// bench network so the job never needs the credentials.
+func (a *HTTPApi) handleWifi(w http.ResponseWriter, r *http.Request) {
+	if !a.requireAuth(r) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or missing x-api-key header"})
+		return
+	}
+	q := r.URL.Query()
+	lockID := q.Get("lock_id")
+	if lockID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "lock_id parameter required"})
+		return
+	}
+	on, ok := parseWifiState(q.Get("state"), false)
+	if !ok || q.Get("state") == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "state parameter must be on or off"})
+		return
+	}
+	var serials []string
+	for _, s := range strings.Split(q.Get("serial"), ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			serials = append(serials, s)
+		}
+	}
+
+	err := a.scopedPortManager.SetWifi(lockID, serials, on)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	case errors.Is(err, errUnknownLock):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, errNotInLock):
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+	default:
+		code, msg := httpStatusForAcquireError(err)
+		slog.Error("wifi change failed", "lockId", lockID, "error", err)
+		writeJSON(w, code, map[string]string{"error": msg})
 	}
 }
 

@@ -42,6 +42,7 @@ jobs:
           go build -ldflags="${LDFLAGS}" -o dist/sair-proxy ./cmd/sair-proxy
           cp tools/sair-acquire dist/
           cp tools/sair-release dist/
+          cp tools/sair-wifi dist/
           cp -r systemd dist/
 
       - name: Archive

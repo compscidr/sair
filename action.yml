@@ -1,6 +1,6 @@
 name: Setup SAIR tools
 description: >-
-  Put sair-acquire and sair-release on PATH, pinned to the release tag this
+  Put sair-acquire, sair-release and sair-wifi on PATH, pinned to the release tag this
   action is used at (uses: compscidr/sair@vX.Y.Z).
 branding:
   icon: smartphone
