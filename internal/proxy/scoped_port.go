@@ -117,8 +117,8 @@ func NewScopedPortManager(
 // With wifi, every local device is joined to the bench Wi-Fi and reaches the
 // Internet before Acquire returns; if one does not, the lock is released and
 // the error returned. A bench without managed Wi-Fi skips this.
-func (m *ScopedPortManager) Acquire(requestedSerials map[string]struct{}, count int32, repo, runURL string, priority int32, wifi bool) (*ScopedPort, error) {
-	result, err := m.commandRouter.AcquireLock(requestedSerials, count, 30, repo, runURL, priority)
+func (m *ScopedPortManager) Acquire(requestedSerials map[string]struct{}, count int32, repo, runURL string, priority int32, wifi bool, tenantKey string) (*ScopedPort, error) {
+	result, err := m.commandRouter.AcquireLock(requestedSerials, count, 30, repo, runURL, priority, tenantKey)
 	if err != nil {
 		return nil, err
 	}

@@ -18,7 +18,7 @@ func TestHTTPApiStartFailsWhenPortTaken(t *testing.T) {
 	defer blocker.Close()
 
 	port := blocker.Addr().(*net.TCPAddr).Port
-	api := NewHTTPApi(nil, nil, "test-key", port, "127.0.0.1")
+	api := NewHTTPApi(nil, nil, "test-key", nil, port, "127.0.0.1")
 
 	if err := api.Start(); err == nil {
 		api.Stop()

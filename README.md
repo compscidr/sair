@@ -145,6 +145,7 @@ grpcurl -plaintext localhost:8080 devicesource.DeviceSource/GetDevices
 | `ORCHESTRATOR_ADDR` | `orchestrator.sair.run:9090` | Orchestrator gRPC address (lock management) |
 | `ORCHESTRATOR_TLS` | `false` (auto-enabled for hosted) | Use TLS for orchestrator connection |
 | `SAIR_API_KEY` | `dev-key-123` | API key for authentication |
+| `SAIR_GUEST_API_KEYS` | empty | Comma-separated API keys of other accounts allowed to lock this proxy's devices. See "Guest tenants" below. |
 | `ADB_PROXY_PORT` | `5037` | ADB protocol listen port |
 | `PROXY_HTTP_PORT` | `8550` | HTTP API listen port |
 | `PROXY_HTTP_HOST` | `0.0.0.0` | HTTP API bind address |
@@ -161,6 +162,47 @@ The proxy exposes two ports:
 The proxy keeps one long-lived stream open to the orchestrator carrying its version, device reports, lock heartbeats and the ADB log of running jobs (flushed within a second). Against an orchestrator that predates the stream it falls back to the periodic unary calls automatically.
 
 A lock can include devices connected to another of your proxies (or shared with you by another account). The orchestrator relays those ADB connections between the two proxies, so `adb` on the runner sees them like local devices. Only outbound connections are used, so proxies behind NAT work; the orchestrator is in the data path for remote devices only.
+
+#### Guest tenants
+
+One bench can serve two accounts. A typical case: a machine whose phones are
+registered under a personal account also runs CI for a company account that
+wants its own locks, queue, logs and billing. Set the company's API key as a
+guest key on the proxy:
+
+```bash
+SAIR_API_KEY=owner-key                 # the account the phones belong to
+SAIR_GUEST_API_KEYS=company-key,other  # accounts that may lock them here
+```
+
+A job holding a guest key uses the proxy like any other job (`sair-acquire`
+with `SAIR_API_KEY=company-key` and the proxy's URL). The proxy forwards the
+guest key on the lock request, so the orchestrator records the lock under
+the guest account while the phones stay on the owner's proxy. ADB traffic
+never leaves the machine.
+
+**Trust model: listing a key is the owner's consent.** Guest keys live in the
+proxy's own config, which only someone with access to that machine can edit.
+Putting an account's key there says "this account may use these phones", so
+nothing has to be marked shared in the portal. The devices stay out of
+the public pool, and a guest can still lock them. The two mechanisms are
+independent:
+
+| | Guest key on the proxy | Shared in the portal |
+|---|---|---|
+| Who may lock | Only the listed accounts | Every SAIR account |
+| Where the lock runs | On the owner's proxy, locally | Through the orchestrator relay |
+| `--count` / all | All phones on this proxy | Only the borrower's own phones |
+| How to grant | Edit the proxy's environment | Toggle per device in the portal |
+
+Both can be on at once. Owner, guest and public borrower all lock the same
+physical phone in one lock domain, so no two can hold it together, and the
+owner's jobs are served before anyone else's when a phone frees up.
+
+A guest key is accepted on every proxy endpoint (`/acquire`, `/release`,
+`/wifi`, `/status`), the same as the owner's key. Any other key is refused.
+Guest keys need an orchestrator that understands them; an older one ignores
+the field and records the lock under the owner.
 
 ### Tools
 
