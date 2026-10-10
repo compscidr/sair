@@ -59,6 +59,11 @@ message AcquireLockRequest {
   // Queue order when the devices are busy: higher is served first, ties are
   // FIFO. 0 (the default) is what every request had before this field.
   int32 priority = 7;
+  // Set when a guest key (one of the proxy's SAIR_GUEST_API_KEYS) acquired
+  // through this proxy: the lock is attributed to that tenant while the device
+  // stays on the owner's proxy and in the owner's lock domain. Empty for the
+  // owner's own locks and from proxies that predate guest keys.
+  string tenant_api_key = 8;
 }
 
 message AcquireLockResponse {

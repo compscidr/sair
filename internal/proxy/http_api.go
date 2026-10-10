@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -26,14 +27,19 @@ type HTTPApi struct {
 	scopedPortManager  *ScopedPortManager
 	deviceListTracker  *DeviceListTracker
 	apiKey             string
+	// guestKeys are other tenants' API keys the owner lets lock this proxy's
+	// devices. The owner's proxy vouches for them: putting a key here is the
+	// owner's consent, no portal-side sharing is involved. See README.
+	guestKeys          []string
 	server             *http.Server
 }
 
-func NewHTTPApi(scopedPortManager *ScopedPortManager, deviceListTracker *DeviceListTracker, apiKey string, port int, host string) *HTTPApi {
+func NewHTTPApi(scopedPortManager *ScopedPortManager, deviceListTracker *DeviceListTracker, apiKey string, guestKeys []string, port int, host string) *HTTPApi {
 	api := &HTTPApi{
 		scopedPortManager:  scopedPortManager,
 		deviceListTracker:  deviceListTracker,
 		apiKey:             apiKey,
+		guestKeys:          guestKeys,
 	}
 
 	mux := http.NewServeMux()
@@ -75,8 +81,19 @@ func (a *HTTPApi) Stop() {
 	slog.Info("proxy HTTP API stopped")
 }
 
+// requireAuth accepts the owner key or any guest key; anything else is refused.
 func (a *HTTPApi) requireAuth(r *http.Request) bool {
-	return r.Header.Get("x-api-key") == a.apiKey
+	key := r.Header.Get("x-api-key")
+	return key == a.apiKey || slices.Contains(a.guestKeys, key)
+}
+
+// tenantKey is the key to attribute a lock to: empty for the owner (the
+// orchestrator session already is the owner), the caller's key for a guest.
+func (a *HTTPApi) tenantKey(r *http.Request) string {
+	if key := r.Header.Get("x-api-key"); key != a.apiKey {
+		return key
+	}
+	return ""
 }
 
 func (a *HTTPApi) handleAcquire(w http.ResponseWriter, r *http.Request) {
@@ -138,7 +155,7 @@ func (a *HTTPApi) handleAcquire(w http.ResponseWriter, r *http.Request) {
 
 	repo := r.URL.Query().Get("repo")
 	runURL := r.URL.Query().Get("run_url")
-	sp, err := a.scopedPortManager.Acquire(requestedSerials, int32(count), repo, runURL, int32(priority), wifi)
+	sp, err := a.scopedPortManager.Acquire(requestedSerials, int32(count), repo, runURL, int32(priority), wifi, a.tenantKey(r))
 	if err != nil {
 		code, msg := httpStatusForAcquireError(err)
 		slog.Error("failed to acquire", "error", err, "status", code, "message", msg)

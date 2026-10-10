@@ -19,6 +19,9 @@ func main() {
 	port := envInt("ADB_PROXY_PORT", 5037)
 	orchestratorAddr := envStr("ORCHESTRATOR_ADDR", "orchestrator.sair.run:9090")
 	apiKey := envStr("SAIR_API_KEY", "dev-key-123")
+	// Other accounts' keys that may lock this proxy's devices (see README,
+	// "Guest tenants"). Listing a key here is the owner's consent.
+	guestKeys := envList("SAIR_GUEST_API_KEYS")
 	httpAPIPort := envInt("PROXY_HTTP_PORT", 8550)
 	httpAPIHost := envStr("PROXY_HTTP_HOST", "0.0.0.0")
 	heartbeatInterval := envInt64("HEARTBEAT_INTERVAL_SECONDS", 60)
@@ -36,6 +39,7 @@ func main() {
 		"orchestrator", orchestratorAddr,
 		"tls", orchestratorTLS,
 		"proxy_id", proxy.ProxyID(),
+		"guest_keys", len(guestKeys),
 	)
 
 	commandRouter, err := proxy.NewCommandRouter(orchestratorAddr, apiKey, orchestratorTLS)
@@ -52,7 +56,7 @@ func main() {
 	// and live logs. Falls back to the unary calls against an older orchestrator.
 	commandRouter.StartSession(version.Version, heartbeatInterval, scopedPortManager.OnLockExpired, deviceListTracker.ReportNow, commandRouter.ServeRelay)
 
-	httpAPI := proxy.NewHTTPApi(scopedPortManager, deviceListTracker, apiKey, httpAPIPort, httpAPIHost)
+	httpAPI := proxy.NewHTTPApi(scopedPortManager, deviceListTracker, apiKey, guestKeys, httpAPIPort, httpAPIHost)
 
 	adbProxy := proxy.NewAdbProxy(port, commandRouter, deviceListTracker)
 
@@ -93,6 +97,17 @@ func envStr(key, defaultVal string) string {
 		return v
 	}
 	return defaultVal
+}
+
+// envList reads a comma-separated list, trimming spaces and dropping empties.
+func envList(key string) []string {
+	var out []string
+	for _, v := range strings.Split(os.Getenv(key), ",") {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func envInt(key string, defaultVal int) int {

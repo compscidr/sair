@@ -317,7 +317,12 @@ type AcquireLockRequest struct {
 	ProxyId string `protobuf:"bytes,6,opt,name=proxy_id,json=proxyId,proto3" json:"proxy_id,omitempty"`
 	// Queue order when the devices are busy: higher is served first, ties are
 	// FIFO. 0 (the default) is what every request had before this field.
-	Priority      int32 `protobuf:"varint,7,opt,name=priority,proto3" json:"priority,omitempty"`
+	Priority int32 `protobuf:"varint,7,opt,name=priority,proto3" json:"priority,omitempty"`
+	// Set when a guest key (one of the proxy's SAIR_GUEST_API_KEYS) acquired
+	// through this proxy: the lock is attributed to that tenant while the device
+	// stays on the owner's proxy and in the owner's lock domain. Empty for the
+	// owner's own locks and from proxies that predate guest keys.
+	TenantApiKey  string `protobuf:"bytes,8,opt,name=tenant_api_key,json=tenantApiKey,proto3" json:"tenant_api_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -392,6 +397,13 @@ func (x *AcquireLockRequest) GetPriority() int32 {
 		return x.Priority
 	}
 	return 0
+}
+
+func (x *AcquireLockRequest) GetTenantApiKey() string {
+	if x != nil {
+		return x.TenantApiKey
+	}
+	return ""
 }
 
 type AcquireLockResponse struct {
@@ -1647,14 +1659,15 @@ const file_proto_orchestrator_orchestrator_proto_rawDesc = "" +
 	"\x05model\x18\x03 \x01(\tR\x05model\x12\x10\n" +
 	"\x03sdk\x18\x04 \x01(\x05R\x03sdk\x12\x18\n" +
 	"\arelease\x18\x05 \x01(\x05R\arelease\x12\x12\n" +
-	"\x04busy\x18\x06 \x01(\bR\x04busy\"\xa8\x01\n" +
+	"\x04busy\x18\x06 \x01(\bR\x04busy\"\xce\x01\n" +
 	"\x12AcquireLockRequest\x12\x18\n" +
 	"\aserials\x18\x01 \x03(\tR\aserials\x12\x12\n" +
 	"\x04repo\x18\x02 \x01(\tR\x04repo\x12\x14\n" +
 	"\x05count\x18\x03 \x01(\x05R\x05count\x12\x17\n" +
 	"\arun_url\x18\x04 \x01(\tR\x06runUrl\x12\x19\n" +
 	"\bproxy_id\x18\x06 \x01(\tR\aproxyId\x12\x1a\n" +
-	"\bpriority\x18\a \x01(\x05R\bpriority\"\x89\x01\n" +
+	"\bpriority\x18\a \x01(\x05R\bpriority\x12$\n" +
+	"\x0etenant_api_key\x18\b \x01(\tR\ftenantApiKey\"\x89\x01\n" +
 	"\x13AcquireLockResponse\x12\x17\n" +
 	"\alock_id\x18\x01 \x01(\tR\x06lockId\x12\x18\n" +
 	"\aserials\x18\x02 \x03(\tR\aserials\x12?\n" +

@@ -183,3 +183,60 @@ func TestHTTPStatusForAcquireError(t *testing.T) {
 		})
 	}
 }
+
+func TestHTTPApiGuestKeys(t *testing.T) {
+	api := &HTTPApi{apiKey: "owner-key", guestKeys: []string{"guest-a", "guest-b"}}
+
+	tests := []struct {
+		name   string
+		key    string
+		wantOK bool
+	}{
+		{"owner key", "owner-key", true},
+		{"first guest key", "guest-a", true},
+		{"second guest key", "guest-b", true},
+		{"unknown key", "someone-else", false},
+		{"empty key", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/status", nil)
+			req.Header.Set("x-api-key", tt.key)
+			if got := api.requireAuth(req); got != tt.wantOK {
+				t.Errorf("requireAuth = %v, want %v", got, tt.wantOK)
+			}
+		})
+	}
+}
+
+// A guest key is forwarded on the lock RPC so the orchestrator can attribute
+// the lock to the guest tenant; the owner's own key is never forwarded, which
+// keeps the request identical to what older proxies send.
+func TestHTTPApiAcquireForwardsGuestKey(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		want string
+	}{
+		{"owner key sends empty tenant_api_key", "owner-key", ""},
+		{"guest key is forwarded", "guest-a", "guest-a"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeOrchClient{err: status.Error(codes.ResourceExhausted, "busy")}
+			router := &CommandRouter{orchClient: fake, apiKey: "owner-key"}
+			api := &HTTPApi{apiKey: "owner-key", guestKeys: []string{"guest-a"}, scopedPortManager: NewScopedPortManager(router, nil, 0)}
+
+			req := httptest.NewRequest("POST", "/acquire", nil)
+			req.Header.Set("x-api-key", tt.key)
+			api.handleAcquire(httptest.NewRecorder(), req)
+
+			if fake.lastAcquire == nil {
+				t.Fatal("acquire never reached the orchestrator")
+			}
+			if got := fake.lastAcquire.TenantApiKey; got != tt.want {
+				t.Errorf("got tenant_api_key %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

@@ -289,7 +289,9 @@ func (r *CommandRouter) ReportDevices(devices []*pb.DeviceInfo) error {
 // specific devices, or count to request that many arbitrary free devices.
 // Passing neither locks every device in the tenant's pool. priority orders
 // the wait when the devices are busy: higher first, FIFO within a value.
-func (r *CommandRouter) AcquireLock(serials map[string]struct{}, count int32, deadlineMinutes int64, repo, runURL string, priority int32) (*LockResult, error) {
+// tenantKey, when set, is a guest key the lock is attributed to; empty means
+// the owner's own lock.
+func (r *CommandRouter) AcquireLock(serials map[string]struct{}, count int32, deadlineMinutes int64, repo, runURL string, priority int32, tenantKey string) (*LockResult, error) {
 	if count < 0 {
 		return nil, fmt.Errorf("count must not be negative: %d", count)
 	}
@@ -302,7 +304,7 @@ func (r *CommandRouter) AcquireLock(serials map[string]struct{}, count int32, de
 	ctx, cancel := r.ctxWithTimeout(time.Duration(deadlineMinutes) * time.Minute)
 	defer cancel()
 
-	req := &pb.AcquireLockRequest{Repo: repo, Count: count, RunUrl: runURL, ProxyId: r.proxyID, Priority: priority}
+	req := &pb.AcquireLockRequest{Repo: repo, Count: count, RunUrl: runURL, ProxyId: r.proxyID, Priority: priority, TenantApiKey: tenantKey}
 	for s := range serials {
 		req.Serials = append(req.Serials, s)
 	}
