@@ -84,6 +84,8 @@ type ScopedPortManager struct {
 	scopedPorts   map[string]*ScopedPort
 	// setWifi is commandRouter.SetWifi; tests swap it.
 	setWifi func(serial string, state dspb.WifiRequest_State) error
+	// removeReverse is commandRouter.RemoveReverseForwards; tests swap it.
+	removeReverse func(serial string) error
 	// wifiMu orders Wi-Fi changes so a released lock's reset can never land
 	// after the next lock's connect on the same device.
 	// ponytail: one lock for every device, per-serial locks if benches grow large.
@@ -105,6 +107,7 @@ func NewScopedPortManager(
 		flushInterval:         time.Second,
 		scopedPorts:           make(map[string]*ScopedPort),
 		setWifi:               commandRouter.SetWifi,
+		removeReverse:         commandRouter.RemoveReverseForwards,
 	}
 }
 
@@ -181,14 +184,18 @@ func (m *ScopedPortManager) SetWifi(lockID string, serials []string, on bool) er
 	return nil
 }
 
-// resetWifi returns a closed port's devices to the Wi-Fi baseline. A device a
-// newer lock already holds is skipped: its connect owns the state now.
-func (m *ScopedPortManager) resetWifi(sp *ScopedPort) {
+// resetDevices returns a closed port's devices to baseline: no reverse
+// forwards, Wi-Fi reset. A device a newer lock already holds is skipped: its
+// job owns the state now.
+func (m *ScopedPortManager) resetDevices(sp *ScopedPort) {
 	m.wifiMu.Lock()
 	defer m.wifiMu.Unlock()
 	for serial := range sp.Serials {
 		if _, remote := sp.RemoteDevices[serial]; remote || m.heldByAnyPort(serial) {
 			continue
+		}
+		if err := m.removeReverse(serial); err != nil && status.Code(err) != codes.NotFound {
+			slog.Warn("removing reverse forwards failed", "serial", serial, "lockId", sp.LockID, "error", err)
 		}
 		if err := m.setWifi(serial, dspb.WifiRequest_RESET); err != nil && !wifiUnmanaged(err) && status.Code(err) != codes.NotFound {
 			slog.Warn("Wi-Fi reset failed", "serial", serial, "lockId", sp.LockID, "error", err)
@@ -286,7 +293,7 @@ func (m *ScopedPortManager) CloseScopedPort(lockID string) bool {
 	slog.Info("closed scoped port", "port", sp.Port, "lockId", lockID)
 	// Every way a lock ends comes through here, so this is where a device is
 	// put back to baseline: before Release hands it back to the orchestrator.
-	m.resetWifi(sp)
+	m.resetDevices(sp)
 	return true
 }
 

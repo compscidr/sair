@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"testing"
@@ -118,7 +119,13 @@ func TestTransportIdReachesARemoteDevice(t *testing.T) {
 	}
 
 	c2, client2 := newConn()
-	resp := drive(c2, client2, fmt.Sprintf("host:transport-id:%d", id))
+	go func() { c2.handleHostCommand(fmt.Sprintf("host:transport-id:%d", id)); c2.conn.Close() }()
+	okay := make([]byte, 4)
+	io.ReadFull(client2, okay)
+	// The proxy reads the service before relaying a remote device's tunnel.
+	fmt.Fprintf(client2, "%04xshell:", len("shell:"))
+	rest, _ := io.ReadAll(client2)
+	resp := string(okay) + string(rest)
 	if !strings.HasPrefix(resp, "OKAY") {
 		t.Errorf("host:transport-id: for a remote device's own id should start OKAY, got %q", resp)
 	}

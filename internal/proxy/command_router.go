@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -253,6 +254,36 @@ func (r *CommandRouter) SetWifi(serial string, state dspb.WifiRequest_State) err
 	defer cancel()
 	_, err = client.SetWifi(ctx, &dspb.WifiRequest{Serial: serial, State: state})
 	return err
+}
+
+// RemoveReverseForwards runs `adb reverse --remove-all` on a local device, so
+// a job that died before its own cleanup leaves no tunnel for the next one.
+// NotFound for a device this proxy has no source for (e.g. a relayed one).
+func (r *CommandRouter) RemoveReverseForwards(serial string) error {
+	addr := ""
+	if r.ResolveSource != nil {
+		addr = r.ResolveSource(serial)
+	}
+	if addr == "" {
+		return status.Errorf(codes.NotFound, "device %s is not attached to this proxy", serial)
+	}
+	client, server := net.Pipe()
+	defer client.Close()
+	// ponytail: a device that never answers leaks the stream goroutine; give
+	// ForwardToDevice a context if that ever shows up.
+	client.SetDeadline(time.Now().Add(30 * time.Second))
+	go func() {
+		r.ForwardToDevice(addr, serial, "reverse:killforward-all", server)
+		server.Close()
+	}()
+	reply, err := io.ReadAll(client)
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(string(reply), "OKAY") {
+		return fmt.Errorf("reverse --remove-all on %s: %q", serial, reply)
+	}
+	return nil
 }
 
 // wifiUnmanaged reports whether a SetWifi error means the bench does not

@@ -71,13 +71,22 @@ func (c *AdbConnection) tunnel(sourceAddr, serial string) error {
 	}
 	if sourceAddr == "" {
 		if _, ok := c.remoteDevices[serial]; ok {
-			err := c.commandRouter.RelayToDevice(serial, "", conn)
+			service, err := ReadRequest(conn)
+			if err != nil {
+				return err
+			}
+			// A reverse forward ends on the host the phone is plugged into,
+			// the owning proxy's, which this job cannot reach.
+			if strings.HasPrefix(service, "reverse:") {
+				slog.Info("refused adb reverse on relayed device", "serial", serial, "service", service)
+				c.writeFailTo(conn, "adb reverse is not supported on "+serial+": it is relayed from another proxy")
+				return nil
+			}
+			err = c.commandRouter.RelayToDevice(serial, service, conn)
 			if err != nil {
 				var refused relayRefused
 				if errors.As(err, &refused) {
-					if werr := WriteFail(conn, err.Error()); werr != nil {
-						slog.Debug("write error", "remote", c.conn.RemoteAddr(), "error", werr)
-					}
+					c.writeFailTo(conn, err.Error())
 				} else {
 					slog.Debug("relay tunnel failed", "serial", serial, "error", err)
 				}
@@ -197,8 +206,11 @@ func (c *AdbConnection) writeOkayWithPayload(payload string) {
 }
 
 // writeFail writes a FAIL response, logging any write errors.
-func (c *AdbConnection) writeFail(message string) {
-	if err := WriteFail(c.conn, message); err != nil {
+func (c *AdbConnection) writeFail(message string) { c.writeFailTo(c.conn, message) }
+
+// writeFailTo is writeFail on a wrapped conn, e.g. a tunnel observer's.
+func (c *AdbConnection) writeFailTo(conn net.Conn, message string) {
+	if err := WriteFail(conn, message); err != nil {
 		slog.Debug("write error", "remote", c.conn.RemoteAddr(), "error", err)
 	}
 }
