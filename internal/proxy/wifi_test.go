@@ -16,6 +16,10 @@ func TestScopedPortWifi(t *testing.T) {
 		calls = append(calls, serial+" "+state.String())
 		return nil
 	}
+	m.removeReverse = func(serial string) error {
+		calls = append(calls, serial+" unreverse")
+		return nil
+	}
 	set := func(s ...string) map[string]struct{} {
 		out := map[string]struct{}{}
 		for _, v := range s {
@@ -45,7 +49,7 @@ func TestScopedPortWifi(t *testing.T) {
 	m.CloseScopedPort("L1")
 	m.CloseScopedPort("L2")
 
-	want := []string{"A ON", "A RESET"}
+	want := []string{"A ON", "A unreverse", "A RESET"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Errorf("calls = %q, want %q", calls, want)
 	}

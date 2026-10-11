@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -392,9 +393,10 @@ func TestAdbConnectionTunnelForwardsDeviceHalfCloseOnAScopedPort(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- c.tunnel("", "REMOTE1") }()
 
-	// Write nothing: just read until EOF. A timeout here (instead of a clean
-	// EOF) means CloseWrite never reached the client -- the bug this test
-	// guards against.
+	// Send only the service (the proxy reads it before relaying), then read
+	// until EOF. A timeout here (instead of a clean EOF) means CloseWrite
+	// never reached the client -- the bug this test guards against.
+	fmt.Fprintf(client, "%04xshell:", len("shell:"))
 	got, err := io.ReadAll(client)
 	if err != nil {
 		t.Fatalf("client read failed (want a clean EOF once the device ended first), got err=%v data=%q", err, got)
