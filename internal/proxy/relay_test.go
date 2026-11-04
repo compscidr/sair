@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -636,4 +637,164 @@ func TestServeRelayWaitsForReleaseReset(t *testing.T) {
 	}
 	mu.Unlock()
 	waitFor(t, "device opened after the reset", func() bool { ds.mu.Lock(); defer ds.mu.Unlock(); return len(ds.setups) == 1 })
+}
+
+// relayResetHarness is a manager on a router owning LOCAL1 and LOCAL2, with
+// the reset steps a test asserts on recorded in calls. The device source
+// fails each relay right after opening it, so a relay here has already ended
+// when ServeRelay returns: the orchestrator fails a lock's relays before it
+// pushes LockExpired.
+type relayResetHarness struct {
+	m      *ScopedPortManager
+	r      *CommandRouter
+	ds     *fakeDeviceSource
+	mu     sync.Mutex
+	calls  []string
+	events []*pb.BenchEvent
+}
+
+func newRelayResetHarness(t *testing.T) *relayResetHarness {
+	t.Helper()
+	h := &relayResetHarness{ds: &fakeDeviceSource{failAfterSetup: status.New(codes.Unavailable, "device gone")}}
+	h.r = relayRouter(t, newFakeRelayOrchestrator(), h.ds, map[string]string{"LOCAL1": "passthrough:///bufconn-ds", "LOCAL2": "passthrough:///bufconn-ds"})
+	h.m = NewScopedPortManager(h.r, nil, 3600)
+	record := func(call string) {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		h.calls = append(h.calls, call)
+	}
+	h.m.removeReverse = func(serial string) error { record(serial + " unreverse"); return nil }
+	h.m.setWifi = func(serial string, state dspb.WifiRequest_State, _ string) error {
+		record(serial + " " + state.String())
+		return nil
+	}
+	h.m.resetPackages = func(string) ([]string, []string, error) { return []string{"com.example.app"}, nil, nil }
+	h.m.event = func(e *pb.BenchEvent) {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		h.events = append(h.events, e)
+	}
+	return h
+}
+
+func (h *relayResetHarness) relay(serial, lockID string) {
+	h.r.ServeRelay(&pb.RelayOpen{TunnelId: lockID + serial, Serial: serial, LockId: lockID})
+}
+
+func (h *relayResetHarness) sortedCalls() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Sorted(slices.Values(h.calls))
+}
+
+// The owner's copy of a lock it only relayed: LockExpired resets the phones
+// relayed under it, once, even though every relay has already ended, and
+// reports the lock id on the bench events.
+func TestLockExpiredResetsRelayedSerials(t *testing.T) {
+	h := newRelayResetHarness(t)
+	h.relay("LOCAL1", "l1")
+	h.relay("LOCAL1", "l1")
+	h.relay("LOCAL2", "l1")
+	h.m.OnLockExpired("l1")
+	want := []string{"LOCAL1 ON", "LOCAL1 RESET", "LOCAL1 unreverse", "LOCAL2 ON", "LOCAL2 RESET", "LOCAL2 unreverse"}
+	if got := h.sortedCalls(); !slices.Equal(got, want) {
+		t.Errorf("calls = %q, want %q", got, want)
+	}
+	if len(h.events) == 0 {
+		t.Error("no bench events")
+	}
+	for _, e := range h.events {
+		if e.LockId != "l1" {
+			t.Errorf("event %v, want lock id l1", e)
+		}
+	}
+
+	h.m.OnLockExpired("l1") // the record went with the reset
+	if got := h.sortedCalls(); len(got) != len(want) {
+		t.Errorf("a second LockExpired reset again: calls = %q", got)
+	}
+}
+
+// A phone already relayed to the next job keeps its APKs, whether that job's
+// relay is open right now or between adb connections, and is reset when that
+// job's own lock ends.
+func TestLockExpiredSkipsSerialWithNewerRelay(t *testing.T) {
+	t.Run("live", func(t *testing.T) {
+		h := newRelayResetHarness(t)
+		h.ds.failAfterSetup = nil // relays stay open
+		opened := func(n int) func() bool {
+			return func() bool { h.ds.mu.Lock(); defer h.ds.mu.Unlock(); return len(h.ds.setups) == n }
+		}
+		go h.relay("LOCAL1", "l1")
+		waitFor(t, "l1's relay open", opened(1))
+		go h.relay("LOCAL1", "l2")
+		waitFor(t, "l2's relay open", opened(2))
+		h.m.OnLockExpired("l1")
+		if got := h.sortedCalls(); len(got) != 0 {
+			t.Errorf("reset under a live relay: calls = %q", got)
+		}
+	})
+	t.Run("ended", func(t *testing.T) {
+		h := newRelayResetHarness(t)
+		h.relay("LOCAL1", "l1")
+		h.relay("LOCAL1", "l2")
+		h.m.OnLockExpired("l1")
+		if got := h.sortedCalls(); len(got) != 0 {
+			t.Errorf("reset under the next job: calls = %q", got)
+		}
+		h.m.OnLockExpired("l2")
+		if got := h.sortedCalls(); len(got) != 3 {
+			t.Errorf("l2's end did not reset: calls = %q", got)
+		}
+	})
+}
+
+// A reset queued on the phone's serial lock decides only once it has the
+// lock: a relay under the next lock that registered meanwhile wins.
+func TestLockExpiredQueuedBehindNewRelaySkipsReset(t *testing.T) {
+	h := newRelayResetHarness(t)
+	h.relay("LOCAL1", "l1")
+	mu := h.m.wifiLock("LOCAL1")
+	mu.Lock()
+	expired := make(chan struct{})
+	go func() { h.m.OnLockExpired("l1"); close(expired) }()
+	go h.relay("LOCAL1", "l2")
+	waitFor(t, "l2 registered while waiting on the serial lock", func() bool {
+		lockID, _ := h.r.relayLocks.Load("LOCAL1")
+		return lockID == "l2"
+	})
+	mu.Unlock()
+	<-expired
+	if got := h.sortedCalls(); len(got) != 0 {
+		t.Errorf("calls = %q", got)
+	}
+}
+
+// A local port holding the phone owns its state too.
+func TestLockExpiredSkipsSerialHeldByLocalPort(t *testing.T) {
+	h := newRelayResetHarness(t)
+	h.relay("LOCAL1", "l1")
+	if _, err := h.m.CreateScopedPort("l2", map[string]struct{}{"LOCAL1": {}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	h.m.OnLockExpired("l1")
+	if got := h.sortedCalls(); len(got) != 0 {
+		t.Errorf("calls = %q", got)
+	}
+	h.m.CloseScopedPort("l2")
+}
+
+// An owner proxy hears about every lock on its phones, most of which it has
+// nothing for; a lock it did relay is unaffected by another's end.
+func TestLockExpiredUnknownLockIsNoop(t *testing.T) {
+	h := newRelayResetHarness(t)
+	h.relay("LOCAL1", "l1")
+	h.m.OnLockExpired("other")
+	if got := h.sortedCalls(); len(got) != 0 {
+		t.Errorf("calls = %q", got)
+	}
+	h.m.OnLockExpired("l1")
+	if got := h.sortedCalls(); len(got) != 3 {
+		t.Errorf("l1's record did not survive another lock's end: calls = %q", got)
+	}
 }

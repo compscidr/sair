@@ -197,6 +197,9 @@ func (r *CommandRouter) ServeRelay(open *pb.RelayOpen) {
 		fail("no device " + open.Serial + " on this proxy")
 		return
 	}
+	// Before the wait below: a reset either sees this and leaves the phone
+	// alone, or already holds the serial's lock and this relay waits for it.
+	r.relayLocks.Store(open.Serial, open.LockId)
 	// A remote holder can be granted a phone whose release reset is still
 	// running here (reboot, Wi-Fi reset, wake); a local acquire waits for it
 	// on the same lock, so the relay does too (sair#105).

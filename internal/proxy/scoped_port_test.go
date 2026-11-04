@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"reflect"
@@ -615,5 +616,64 @@ func TestShutdownAllReleasesAsProxyRestart(t *testing.T) {
 	waitFor(t, "shutdown release", func() bool { return f.release() != nil })
 	if rel := f.release(); rel.LockId != "lock-1" || rel.Status != "proxy_restart" {
 		t.Errorf("release = %+v", rel)
+	}
+}
+
+// Ending a lock ends its connections, before the reset: a client still
+// talking through the port must not be driving the phone while it resets.
+func TestCloseScopedPortClosesOpenConnections(t *testing.T) {
+	m := NewScopedPortManager(&CommandRouter{}, nil, 3600)
+	m.setWifi = func(string, dspb.WifiRequest_State, string) error { return nil }
+	sp, err := m.CreateScopedPort("L1", map[string]struct{}{"A": {}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(sp.Port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	waitFor(t, "connection accepted", func() bool { return sp.openConns.Load() == 1 })
+
+	var readErr error
+	m.removeReverse = func(string) error { // the reset's first step
+		client.SetReadDeadline(time.Now().Add(time.Second))
+		_, readErr = client.Read(make([]byte, 1))
+		return nil
+	}
+	m.CloseScopedPort("L1")
+	if !errors.Is(readErr, io.EOF) {
+		t.Errorf("client read during the reset: err = %v, want EOF", readErr)
+	}
+}
+
+// oneConnListener hands out one connection, then reports itself closed.
+type oneConnListener struct {
+	net.Listener
+	conn net.Conn
+}
+
+func (l *oneConnListener) Accept() (net.Conn, error) {
+	if c := l.conn; c != nil {
+		l.conn = nil
+		return c, nil
+	}
+	return nil, net.ErrClosed
+}
+
+// A connection Accept returns just as the port closes missed the close's
+// sweep, so the accept loop has to close it itself.
+func TestConnectionAcceptedAsPortClosesIsClosed(t *testing.T) {
+	m := NewScopedPortManager(&CommandRouter{}, nil, 3600)
+	client, server := net.Pipe()
+	defer client.Close()
+	sp := &ScopedPort{LockID: "L1", Port: 1, listener: &oneConnListener{conn: server}, stopCh: make(chan struct{})}
+	close(sp.stopCh)
+	sp.closeConns()
+	m.runAcceptLoop(sp)
+
+	client.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := client.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Errorf("client read: err = %v, want EOF", err)
 	}
 }

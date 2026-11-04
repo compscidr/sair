@@ -55,6 +55,12 @@ type CommandRouter struct {
 	// waitReset blocks while a released lock's reset still runs on serial.
 	// Set by NewScopedPortManager, which owns the per-serial lock.
 	waitReset func(serial string)
+	// relayLocks maps a serial to the latest lock ServeRelay relayed it under,
+	// for the phone's reset when that lock ends; an earlier lock's end then
+	// leaves it alone, the phone is the next job's.
+	// ponytail: an older orchestrator never pushes the owner LockExpired, so an
+	// entry can outlive its lock; the ceiling is one per serial ever relayed.
+	relayLocks sync.Map
 
 	// events queues bench events for the session (see Event); nil until
 	// StartSession, which drops them.

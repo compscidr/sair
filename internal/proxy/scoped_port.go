@@ -56,6 +56,42 @@ type ScopedPort struct {
 	remoteMu       sync.Mutex
 	remoteBySerial map[string]int
 	remoteByID     map[int]string
+	// relayed marks the stand-in for a lock this proxy only relayed phones for.
+	relayed bool
+	// conns are the accepted connections still open, closed along with the
+	// port. Once connsClosed is set, a late accept is closed on arrival.
+	connMu      sync.Mutex
+	conns       map[net.Conn]struct{}
+	connsClosed bool
+}
+
+// trackConn records an accepted connection, or closes it and returns false
+// when the port has closed since it was accepted.
+func (sp *ScopedPort) trackConn(conn net.Conn) bool {
+	sp.connMu.Lock()
+	defer sp.connMu.Unlock()
+	if sp.connsClosed {
+		conn.Close()
+		return false
+	}
+	sp.conns[conn] = struct{}{}
+	return true
+}
+
+func (sp *ScopedPort) untrackConn(conn net.Conn) {
+	sp.connMu.Lock()
+	defer sp.connMu.Unlock()
+	delete(sp.conns, conn)
+}
+
+// closeConns ends every connection on the port, and any accepted from now on.
+func (sp *ScopedPort) closeConns() {
+	sp.connMu.Lock()
+	defer sp.connMu.Unlock()
+	sp.connsClosed = true
+	for conn := range sp.conns {
+		conn.Close()
+	}
 }
 
 // remoteTransportID returns a transport id for a remote serial, stable for the
@@ -542,6 +578,11 @@ func (m *ScopedPortManager) resetDevice(sp *ScopedPort, serial string) {
 	mu := m.wifiLock(serial)
 	mu.Lock()
 	defer mu.Unlock()
+	// A relayed phone's record is only cleared if it still names this lock:
+	// a later relay means the phone is the next job's now.
+	if sp.relayed && !m.commandRouter.relayLocks.CompareAndDelete(serial, lockID) {
+		return
+	}
 	// Checked under the lock: an expired lock's reset can queue behind the
 	// next lock's ON on this phone, and must not then undo it.
 	if m.heldByAnyPort(serial) {
@@ -796,6 +837,7 @@ func (m *ScopedPortManager) CreateScopedPort(lockID string, serials map[string]s
 		keepaliveDone: make(chan struct{}),
 		Log:           &LockLog{},
 		RemoteDevices: remoteDevices,
+		conns:         make(map[net.Conn]struct{}),
 	}
 	sp.lastClient.Store(sp.CreatedAt.UnixNano())
 
@@ -844,6 +886,7 @@ func (m *ScopedPortManager) CloseScopedPort(lockID string) bool {
 	close(sp.heartbeatStop)
 	close(sp.stopCh)
 	sp.listener.Close()
+	sp.closeConns()    // nothing may still be driving a phone during its reset
 	<-sp.keepaliveDone // wait for runKeepalive to stop touching sp.Log before a caller drains it
 
 	slog.Info("closed scoped port", "port", sp.Port, "lockId", lockID)
@@ -854,11 +897,28 @@ func (m *ScopedPortManager) CloseScopedPort(lockID string) bool {
 }
 
 // OnLockExpired is the session's callback: the orchestrator released the lock,
-// so the scoped port is dead. Idempotent.
+// so the scoped port is dead and any phone relayed under it goes back to
+// baseline. Idempotent.
 func (m *ScopedPortManager) OnLockExpired(lockID string) {
 	if m.CloseScopedPort(lockID) {
 		slog.Warn("lock expired on orchestrator; closed scoped port", "lockId", lockID)
 	}
+	m.resetRelayed(lockID)
+}
+
+// resetRelayed resets the phones relayed from here under an ended lock. Its
+// holder's job log is on another proxy, so the stand-in port has no log and
+// the lock log lines of the reset go nowhere; the events still report the lock.
+func (m *ScopedPortManager) resetRelayed(lockID string) {
+	sp := &ScopedPort{LockID: lockID, relayed: true}
+	var wg sync.WaitGroup
+	m.commandRouter.relayLocks.Range(func(serial, id any) bool {
+		if id == lockID {
+			wg.Go(func() { m.resetDevice(sp, serial.(string)) })
+		}
+		return true
+	})
+	wg.Wait()
 }
 
 // GetAllScopedPorts returns a snapshot of all active scoped ports.
@@ -906,6 +966,9 @@ func (m *ScopedPortManager) runAcceptLoop(sp *ScopedPort) {
 			}
 			return
 		}
+		if !sp.trackConn(conn) {
+			continue
+		}
 		// Disable Nagle's algorithm so ADB protocol messages are sent immediately
 		if tc, ok := conn.(*net.TCPConn); ok {
 			if err := tc.SetNoDelay(true); err != nil {
@@ -921,6 +984,7 @@ func (m *ScopedPortManager) runAcceptLoop(sp *ScopedPort) {
 			defer func() {
 				sp.lastClient.Store(time.Now().UnixNano())
 				sp.openConns.Add(-1)
+				sp.untrackConn(conn)
 			}()
 			adbConn.Handle()
 		}()
