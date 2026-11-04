@@ -1,6 +1,7 @@
 package devicesource
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"reflect"
@@ -22,6 +23,8 @@ type fakeRadio struct {
 	state, onGoesTo      string
 	scan                 bool
 	scanApps, stickyApps []string
+	radios               string // airplane_mode_radios; airplane mode clears every holder when it names bluetooth
+	airplane             bool
 	cmds                 []string
 }
 
@@ -60,6 +63,25 @@ func (f *fakeRadio) install(s *Server) {
 			f.scanApps = slices.DeleteFunc(f.scanApps, func(a string) bool { return a == pkg })
 			apps = slices.DeleteFunc(apps, func(a string) bool { return a == pkg })
 			settle()
+		case command == "settings get global airplane_mode_radios":
+			return cmp.Or(f.radios, "cell,bluetooth,wifi") + "\n", nil
+		case strings.HasPrefix(command, "settings put global airplane_mode_radios "):
+			f.radios = strings.Trim(strings.TrimPrefix(command, "settings put global airplane_mode_radios "), "'")
+		case command == "settings get global airplane_mode_on":
+			if f.airplane {
+				return "1\n", nil
+			}
+			return "0\n", nil
+		case command == "cmd connectivity airplane-mode enable":
+			f.airplane = true
+			if strings.Contains(cmp.Or(f.radios, "cell,bluetooth,wifi"), "bluetooth") && f.state != "" {
+				f.state = "OFF"
+			}
+		case command == "cmd connectivity airplane-mode disable":
+			f.airplane = false
+			if f.state == "OFF" && len(apps) > 0 {
+				f.state = "BLE_ON" // the holders register again
+			}
 		case command == "dumpsys bluetooth_manager":
 			if f.state == "" {
 				return "", nil
@@ -157,17 +179,56 @@ func TestResetBluetoothSaysBackOnWhenNeverFullyOff(t *testing.T) {
 	f.install(s)
 	radio := s.shell
 	s.shell = func(ctx context.Context, serial, command string) (string, error) {
-		if strings.HasPrefix(command, "am force-stop ") {
+		if strings.HasPrefix(command, "am force-stop ") || strings.HasPrefix(command, "cmd connectivity airplane-mode ") {
 			return "", nil
 		}
 		return radio(ctx, serial, command)
 	}
 	_, err := s.ResetBluetooth(context.Background(), &pb.ResetBluetoothRequest{Serial: "A"})
-	if status.Code(err) != codes.DeadlineExceeded || !strings.Contains(err.Error(), "A: Bluetooth back on but never fully off: A Bluetooth not off within") || !strings.Contains(err.Error(), "BLE apps: com.example.holder") {
+	if status.Code(err) != codes.DeadlineExceeded || !strings.Contains(err.Error(), "A: Bluetooth back on but never fully off: A Bluetooth not off within") || !strings.Contains(err.Error(), "even through airplane mode (BLE apps: com.example.holder)") {
 		t.Fatalf("err = %v", err)
 	}
 	if f.state != "ON" {
 		t.Errorf("state = %s, want ON", f.state)
+	}
+}
+
+// A holder no force-stop reaches (the A06's Auto Hotspot scanner inside
+// system_server, listed as "android") is cleared by airplane mode scoped to
+// Bluetooth, with the radio list and airplane mode put back before
+// Bluetooth is enabled (sair#159).
+func TestResetBluetoothCyclesAirplaneModeForSystemHolder(t *testing.T) {
+	s := &Server{bluetoothTimeout: 10 * time.Millisecond}
+	f := &fakeRadio{state: "ON", onGoesTo: "ON", stickyApps: []string{"android"}, radios: "cell,bluetooth,uwb,wifi,wimax"}
+	f.install(s)
+	if _, err := s.ResetBluetooth(context.Background(), &pb.ResetBluetoothRequest{Serial: "A"}); err != nil {
+		t.Fatal(err)
+	}
+	if f.state != "ON" || f.airplane || f.radios != "cell,bluetooth,uwb,wifi,wimax" {
+		t.Errorf("state %s, airplane %v, radios %q: want ON, off, restored", f.state, f.airplane, f.radios)
+	}
+	at := func(c string) int { return slices.Index(f.cmds, c) }
+	on, off, scoped, restored, enable := at("cmd connectivity airplane-mode enable"), at("cmd connectivity airplane-mode disable"), at("settings put global airplane_mode_radios bluetooth"), at("settings put global airplane_mode_radios 'cell,bluetooth,uwb,wifi,wimax'"), at("svc bluetooth enable")
+	if !(scoped >= 0 && scoped < on && on < off && off < restored && restored < enable) {
+		t.Errorf("order scoped=%d on=%d off=%d restored=%d enable=%d: %q", scoped, on, off, restored, enable, f.cmds)
+	}
+	if slices.ContainsFunc(f.cmds, func(c string) bool { return strings.HasPrefix(c, "am force-stop") }) {
+		t.Errorf("force-stopped a system holder: %q", f.cmds)
+	}
+}
+
+// A phone already in airplane mode is left in it: no toggle, and the error
+// says why the holder stayed.
+func TestResetBluetoothLeavesAirplaneModeAlone(t *testing.T) {
+	s := &Server{bluetoothTimeout: 10 * time.Millisecond}
+	f := &fakeRadio{state: "ON", onGoesTo: "ON", stickyApps: []string{"android"}, airplane: true}
+	f.install(s)
+	_, err := s.ResetBluetooth(context.Background(), &pb.ResetBluetoothRequest{Serial: "A"})
+	if status.Code(err) != codes.DeadlineExceeded || !strings.Contains(err.Error(), "adapter is BLE_ON in airplane mode already") {
+		t.Fatalf("err = %v", err)
+	}
+	if !f.airplane || slices.ContainsFunc(f.cmds, func(c string) bool { return strings.HasPrefix(c, "cmd connectivity airplane-mode") }) {
+		t.Errorf("airplane mode touched: %q", f.cmds)
 	}
 }
 
