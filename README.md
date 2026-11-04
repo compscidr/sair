@@ -241,8 +241,12 @@ you:
   scanning" or an app that asked for BLE), so sair turns
   `ble_scan_always_enabled` off for the cycle and, if BLE is still held,
   force-stops the packages the dump lists as BLE apps (on One UI,
-  `com.samsung.android.beaconmanager` and `com.samsung.android.mdx.kit`). The
-  setting is restored before Bluetooth comes back on. Skipped after an uptime
+  `com.samsung.android.beaconmanager` and `com.samsung.android.mdx.kit`). A
+  holder that survives that too (the Galaxy A06's Auto Hotspot scanner lives
+  in `system_server`, listed as `android`) is cleared by airplane mode,
+  scoped to Bluetooth through `airplane_mode_radios` so Wi-Fi and cell stay
+  connected. The settings are restored before Bluetooth comes back on.
+  Skipped after an uptime
   reboot, and done on acquire instead when no release reset ran since the
   phone's last job (or since the proxy started). The lock log gets
   `sair: Bluetooth cycled off and on (…)`. A radio that does not go fully off
