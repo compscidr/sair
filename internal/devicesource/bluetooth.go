@@ -116,14 +116,26 @@ func (s *Server) bluetoothOff(ctx context.Context, serial string) error {
 			slog.Warn("force-stop failed", "serial", serial, "package", pkg, "error", err)
 		}
 	}
-	if wait(min(5*time.Second, s.bluetoothTimeout), "OFF") == nil {
+	// Not %w: a wrapped status reads "rpc error: code = ... desc = ..." in
+	// the lock log.
+	held := func(err error, how string) error {
+		st := status.Convert(err)
+		return status.Errorf(st.Code(), "%s %s (BLE apps: %s)", st.Message(), how, cmp.Or(strings.Join(apps, ", "), "none listed"))
+	}
+	err = wait(min(5*time.Second, s.bluetoothTimeout), "OFF")
+	if err == nil {
 		return nil
 	}
 	// Still BLE_ON: a holder nothing above drops. The A06's is One UI's
 	// Auto Hotspot BLE scanner inside system_server, which the dump lists
 	// as "android" (sair#159). Airplane mode is the one switch that clears
 	// every BLE holder; scoped to the Bluetooth radio, Wi-Fi and cell keep
-	// their connections. The radio list is put back on return.
+	// their connections. The radio list is put back on return. A phone
+	// already in airplane mode is left in it: enabling again would change
+	// nothing, and disabling would change more than Bluetooth.
+	if apm, apmErr := s.shell(ctx, serial, "settings get global airplane_mode_on"); apmErr == nil && strings.TrimSpace(apm) == "1" {
+		return held(err, "in airplane mode already")
+	}
 	slog.Info("Bluetooth still at BLE_ON; cycling airplane mode for Bluetooth only", "serial", serial)
 	if radios, err := s.shell(ctx, serial, "settings get global airplane_mode_radios"); err == nil {
 		restore := "settings put global airplane_mode_radios " + shellQuote(strings.TrimSpace(radios))
@@ -142,10 +154,7 @@ func (s *Server) bluetoothOff(ctx context.Context, serial string) error {
 		slog.Warn("airplane mode off failed", "serial", serial, "error", offErr)
 	}
 	if err != nil {
-		// Not %w: a wrapped status reads "rpc error: code = ... desc = ..."
-		// in the lock log.
-		st := status.Convert(err)
-		return status.Errorf(st.Code(), "%s even through airplane mode (BLE apps: %s)", st.Message(), cmp.Or(strings.Join(apps, ", "), "none listed"))
+		return held(err, "even through airplane mode")
 	}
 	return nil
 }

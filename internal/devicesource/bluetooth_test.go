@@ -67,6 +67,11 @@ func (f *fakeRadio) install(s *Server) {
 			return cmp.Or(f.radios, "cell,bluetooth,wifi") + "\n", nil
 		case strings.HasPrefix(command, "settings put global airplane_mode_radios "):
 			f.radios = strings.Trim(strings.TrimPrefix(command, "settings put global airplane_mode_radios "), "'")
+		case command == "settings get global airplane_mode_on":
+			if f.airplane {
+				return "1\n", nil
+			}
+			return "0\n", nil
 		case command == "cmd connectivity airplane-mode enable":
 			f.airplane = true
 			if strings.Contains(cmp.Or(f.radios, "cell,bluetooth,wifi"), "bluetooth") && f.state != "" {
@@ -209,6 +214,21 @@ func TestResetBluetoothCyclesAirplaneModeForSystemHolder(t *testing.T) {
 	}
 	if slices.ContainsFunc(f.cmds, func(c string) bool { return strings.HasPrefix(c, "am force-stop") }) {
 		t.Errorf("force-stopped a system holder: %q", f.cmds)
+	}
+}
+
+// A phone already in airplane mode is left in it: no toggle, and the error
+// says why the holder stayed.
+func TestResetBluetoothLeavesAirplaneModeAlone(t *testing.T) {
+	s := &Server{bluetoothTimeout: 10 * time.Millisecond}
+	f := &fakeRadio{state: "ON", onGoesTo: "ON", stickyApps: []string{"android"}, airplane: true}
+	f.install(s)
+	_, err := s.ResetBluetooth(context.Background(), &pb.ResetBluetoothRequest{Serial: "A"})
+	if status.Code(err) != codes.DeadlineExceeded || !strings.Contains(err.Error(), "adapter is BLE_ON in airplane mode already") {
+		t.Fatalf("err = %v", err)
+	}
+	if !f.airplane || slices.ContainsFunc(f.cmds, func(c string) bool { return strings.HasPrefix(c, "cmd connectivity airplane-mode") }) {
+		t.Errorf("airplane mode touched: %q", f.cmds)
 	}
 }
 
