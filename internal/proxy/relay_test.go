@@ -798,3 +798,115 @@ func TestLockExpiredUnknownLockIsNoop(t *testing.T) {
 		t.Errorf("l1's record did not survive another lock's end: calls = %q", got)
 	}
 }
+
+// The orchestrator's stop step reaches a phone local to the holder's proxy
+// through the relay too, so a lock can have both a port and a relay record
+// for one phone: its end resets the phone once.
+func TestLockExpiredWithPortAndRelayResetsOnce(t *testing.T) {
+	h := newRelayResetHarness(t)
+	if _, err := h.m.CreateScopedPort("l1", map[string]struct{}{"LOCAL1": {}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	h.relay("LOCAL1", "l1")
+	h.m.OnLockExpired("l1")
+	want := []string{"LOCAL1 ON", "LOCAL1 RESET", "LOCAL1 unreverse"}
+	if got := h.sortedCalls(); !slices.Equal(got, want) {
+		t.Errorf("calls = %q, want %q", got, want)
+	}
+}
+
+// The orchestrator gives an owner seconds to join a tunnel and a reset can
+// take minutes, so a relay opened during a reset joins first, and only
+// reaches the device once the reset is done.
+func TestServeRelayJoinsBeforeReleaseResetEnds(t *testing.T) {
+	f := newFakeRelayOrchestrator()
+	ds := &fakeDeviceSource{}
+	r := relayRouter(t, f, ds, map[string]string{"LOCAL1": "passthrough:///bufconn-ds"})
+	m := NewScopedPortManager(r, nil, 3600)
+	mu := m.wifiLock("LOCAL1")
+	mu.Lock() // the reset
+	go r.ServeRelay(&pb.RelayOpen{TunnelId: "t1", Serial: "LOCAL1", LockId: "l1"})
+	waitFor(t, "owner joined during the reset", func() bool { f.mu.Lock(); defer f.mu.Unlock(); return len(f.setups) == 1 })
+	ds.mu.Lock()
+	n := len(ds.setups)
+	ds.mu.Unlock()
+	if n != 0 {
+		mu.Unlock()
+		t.Fatal("relay opened the device during its reset")
+	}
+	mu.Unlock()
+	waitFor(t, "device opened after the reset", func() bool { ds.mu.Lock(); defer ds.mu.Unlock(); return len(ds.setups) == 1 })
+}
+
+// A tunnel the orchestrator failed during the wait (its lock ended, say) is
+// not served when the reset ends: its command must never reach the phone.
+func TestServeRelayTunnelFailedDuringResetNeverOpensDevice(t *testing.T) {
+	f := newFakeRelayOrchestrator()
+	ds := &fakeDeviceSource{}
+	r := relayRouter(t, f, ds, map[string]string{"LOCAL1": "passthrough:///bufconn-ds"})
+	m := NewScopedPortManager(r, nil, 3600)
+	mu := m.wifiLock("LOCAL1")
+	mu.Lock() // the reset
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		r.ServeRelay(&pb.RelayOpen{TunnelId: "t1", Serial: "LOCAL1", LockId: "l1"})
+	}()
+	waitFor(t, "owner joined during the reset", func() bool { f.mu.Lock(); defer f.mu.Unlock(); return len(f.setups) == 1 })
+	f.mu.Lock()
+	done := f.done["t1"]
+	f.mu.Unlock()
+	done <- status.Error(codes.Aborted, "lock l1 released")
+	time.Sleep(200 * time.Millisecond) // the failure reaches the proxy
+	mu.Unlock()
+	select {
+	case <-served:
+	case <-time.After(3 * time.Second):
+		t.Fatal("ServeRelay still waiting after the reset")
+	}
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	if len(ds.setups) != 0 {
+		t.Errorf("failed tunnel reached the device: %v", ds.setups)
+	}
+}
+
+// Failing to open the device happens after the owner joined, so the holder
+// has already been accepted and relay_failed can no longer become a FAIL. The
+// adb client gets the same FAIL through the tunnel, then the connection ends.
+func TestServeRelayDeviceOpenFailureAfterJoinIsAFail(t *testing.T) {
+	f := newFakeRelayOrchestrator()
+	r := relayRouter(t, f, &fakeDeviceSource{}, map[string]string{"REMOTE1": "passthrough:///bufconn-ds"})
+	r.dsDialer = func(context.Context, string) (net.Conn, error) { return nil, errors.New("source down") }
+
+	client, server := tcpPair(t)
+	done := make(chan error, 1)
+	go func() { done <- r.RelayToDevice("REMOTE1", "shell:", server) }()
+	waitFor(t, "holder setup", func() bool { f.mu.Lock(); defer f.mu.Unlock(); return len(f.setups) >= 1 })
+	f.mu.Lock()
+	s := f.setups[0]
+	f.mu.Unlock()
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		r.ServeRelay(&pb.RelayOpen{TunnelId: s.TunnelId, Serial: s.Serial, InitialCommand: s.InitialCommand, LockId: "l1"})
+	}()
+
+	client.SetReadDeadline(time.Now().Add(10 * time.Second))
+	got, err := io.ReadAll(client)
+	if err != nil {
+		t.Fatalf("read: %v (got %q)", err, got)
+	}
+	if !strings.HasPrefix(string(got), "FAIL") || !strings.Contains(string(got), "source down") {
+		t.Errorf("adb client got %q, want a FAIL naming the cause", got)
+	}
+	client.Close()
+	if err := <-done; err != nil {
+		t.Errorf("RelayToDevice: %v", err)
+	}
+	select {
+	case <-served:
+	case <-time.After(3 * time.Second):
+		t.Fatal("ServeRelay did not return after the holder left")
+	}
+}

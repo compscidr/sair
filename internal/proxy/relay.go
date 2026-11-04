@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	dspb "github.com/compscidr/sair/proto/devicesource"
 	pb "github.com/compscidr/sair/proto/orchestrator"
 	"github.com/google/uuid"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -105,6 +107,45 @@ func (c closeSignalStream) CloseSend() error {
 	return c.Send(&pb.TunnelData{Payload: &pb.TunnelData_HalfClose{HalfClose: true}})
 }
 
+// recvAheadStream runs a tunnel's first Recv from the start, so failed can tell
+// whether the tunnel has ended without taking bytes from the pump: Recv hands
+// the result over first. Like any stream, one Recv at a time.
+type recvAheadStream struct {
+	grpc.BidiStreamingClient[pb.TunnelData, pb.TunnelData]
+	done  chan struct{} // closed once the first Recv returned, with first and err set
+	first *pb.TunnelData
+	err   error
+	taken bool
+}
+
+func newRecvAheadStream(s grpc.BidiStreamingClient[pb.TunnelData, pb.TunnelData]) *recvAheadStream {
+	t := &recvAheadStream{BidiStreamingClient: s, done: make(chan struct{})}
+	go func() {
+		t.first, t.err = s.Recv()
+		close(t.done)
+	}()
+	return t
+}
+
+// failed is the error that ended the tunnel if its first Recv already saw one.
+func (t *recvAheadStream) failed() error {
+	select {
+	case <-t.done:
+		return t.err
+	default:
+		return nil
+	}
+}
+
+func (t *recvAheadStream) Recv() (*pb.TunnelData, error) {
+	if t.taken {
+		return t.BidiStreamingClient.Recv()
+	}
+	t.taken = true
+	<-t.done
+	return t.first, t.err
+}
+
 // RelayToDevice serves one ADB connection to a device that lives on another
 // proxy: it opens the holder half of a tunnel through the orchestrator, which
 // asks the owner to open the other half, and pumps until the connection ends.
@@ -179,9 +220,11 @@ func relayErr(err error) error {
 }
 
 // ServeRelay answers the orchestrator's relay_open for one of this proxy's
-// devices: opens the device through the local device source and the owner
-// half of the tunnel, and pumps until either side ends. Failures before the
-// tunnel is up are reported as relay_failed so the holder's client gets a FAIL.
+// devices: joins the owner half of the tunnel, waits out any reset of the
+// phone, opens the device through the local device source, and pumps until
+// either side ends. Failures before joining are reported as relay_failed and
+// a failure to open the device as a FAIL in the tunnel, so either way the
+// holder's client gets a FAIL.
 func (r *CommandRouter) ServeRelay(open *pb.RelayOpen) {
 	fail := func(msg string) {
 		slog.Warn("relay: cannot serve", "tunnelId", open.TunnelId, "serial", open.Serial, "error", msg)
@@ -200,38 +243,16 @@ func (r *CommandRouter) ServeRelay(open *pb.RelayOpen) {
 	// Before the wait below: a reset either sees this and leaves the phone
 	// alone, or already holds the serial's lock and this relay waits for it.
 	r.relayLocks.Store(open.Serial, open.LockId)
-	// A remote holder can be granted a phone whose release reset is still
-	// running here (reboot, Wi-Fi reset, wake); a local acquire waits for it
-	// on the same lock, so the relay does too (sair#105).
-	if r.waitReset != nil {
-		r.waitReset(open.Serial)
-	}
-	client, err := r.getOrCreateDSClient(sourceAddr)
-	if err != nil {
-		fail(err.Error())
-		return
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	fwd, err := client.ForwardToDevice(ctx)
-	if err != nil {
-		fail(err.Error())
-		return
-	}
-	if err := fwd.Send(&dspb.ForwardData{Payload: &dspb.ForwardData_Setup{Setup: &dspb.ForwardSetup{Serial: open.Serial, InitialCommand: open.InitialCommand}}}); err != nil {
-		fail(err.Error())
-		return
-	}
 	octx, ocancel := context.WithCancel(metadata.NewOutgoingContext(context.Background(), metadata.Pairs("x-api-key", r.apiKey)))
 	defer ocancel()
-	tun, err := r.orchClient.Tunnel(octx)
+	stream, err := r.orchClient.Tunnel(octx)
 	if err != nil {
 		fail(err.Error())
 		return
 	}
-	if err := tun.Send(&pb.TunnelData{Payload: &pb.TunnelData_Setup{Setup: &pb.TunnelSetup{TunnelId: open.TunnelId, Side: pb.TunnelSide_TUNNEL_SIDE_OWNER}}}); err != nil {
+	if err := stream.Send(&pb.TunnelData{Payload: &pb.TunnelData_Setup{Setup: &pb.TunnelSetup{TunnelId: open.TunnelId, Side: pb.TunnelSide_TUNNEL_SIDE_OWNER}}}); err != nil {
 		// Send on a refused stream returns io.EOF; the status is on Recv.
-		if _, rerr := tun.Recv(); rerr != nil {
+		if _, rerr := stream.Recv(); rerr != nil {
 			if st, ok := status.FromError(rerr); ok {
 				fail(st.Message())
 			} else {
@@ -240,6 +261,56 @@ func (r *CommandRouter) ServeRelay(open *pb.RelayOpen) {
 			return
 		}
 		fail(err.Error())
+		return
+	}
+	// Joined, so the orchestrator's short join timeout no longer applies: to
+	// the adb client, a reset below is just a slow service open.
+	tun := newRecvAheadStream(stream)
+	// A remote holder can be granted a phone whose release reset is still
+	// running here (reboot, Wi-Fi reset, wake); a local acquire waits for it
+	// on the same lock, so the relay does too (sair#105).
+	if r.waitReset != nil {
+		r.waitReset(open.Serial)
+	}
+	// The tunnel may have died during that wait (its lock ended, say); its
+	// command must not reach the phone.
+	if err := tun.failed(); err != nil {
+		fail(errText(err))
+		return
+	}
+	// The holder was accepted when this side joined, so relay_failed would only
+	// end its connection. It gets the FAIL through the tunnel instead.
+	failInBand := func(msg string) {
+		slog.Warn("relay: cannot open the device", "tunnelId", open.TunnelId, "serial", open.Serial, "error", msg)
+		var reply bytes.Buffer
+		WriteFail(&reply, msg)
+		s := closeSignalStream{tunnelStream{tun}}
+		if err := s.SendBytes(reply.Bytes()); err != nil {
+			return
+		}
+		s.CloseSend()
+		tun.CloseSend()
+		// As after a clean pump below: wait for the holder, or the FAIL may be lost.
+		for {
+			if _, err := tun.Recv(); err != nil {
+				return
+			}
+		}
+	}
+	client, err := r.getOrCreateDSClient(sourceAddr)
+	if err != nil {
+		failInBand(err.Error())
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fwd, err := client.ForwardToDevice(ctx)
+	if err != nil {
+		failInBand(errText(err))
+		return
+	}
+	if err := fwd.Send(&dspb.ForwardData{Payload: &dspb.ForwardData_Setup{Setup: &dspb.ForwardSetup{Serial: open.Serial, InitialCommand: open.InitialCommand}}}); err != nil {
+		failInBand(err.Error())
 		return
 	}
 	slog.Info("relay: serving", "tunnelId", open.TunnelId, "serial", open.Serial, "lockId", open.LockId)

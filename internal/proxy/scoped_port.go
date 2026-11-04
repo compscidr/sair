@@ -578,9 +578,11 @@ func (m *ScopedPortManager) resetDevice(sp *ScopedPort, serial string) {
 	mu := m.wifiLock(serial)
 	mu.Lock()
 	defer mu.Unlock()
-	// A relayed phone's record is only cleared if it still names this lock:
-	// a later relay means the phone is the next job's now.
-	if sp.relayed && !m.commandRouter.relayLocks.CompareAndDelete(serial, lockID) {
+	// This reset settles any relay record naming this lock, so a phone local to
+	// the holder's proxy is not reset again when the lock expires. For a relayed
+	// phone, a record naming another lock means a later relay: it is the next
+	// job's now.
+	if cleared := m.commandRouter.relayLocks.CompareAndDelete(serial, lockID); sp.relayed && !cleared {
 		return
 	}
 	// Checked under the lock: an expired lock's reset can queue behind the
