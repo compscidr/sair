@@ -291,8 +291,9 @@ func (r *CommandRouter) AddReverseForward(serial string, port int) error {
 
 // ResetPackages uninstalls what a job installed on a local device, through its
 // device source, and returns the packages and the Wi-Fi suggestions that went
-// with them. It keeps since if given, else the device's baseline. NotFound for a device this proxy has no source for; Unimplemented
-// from a device source that predates it.
+// with them. It keeps since if given, else the device's baseline. NotFound for
+// a device this proxy has no source for; Unimplemented from a device source
+// that predates it.
 func (r *CommandRouter) ResetPackages(serial string, since *dspb.PackageSnapshot) (removed, suggestions []string, err error) {
 	addr := ""
 	if r.ResolveSource != nil {

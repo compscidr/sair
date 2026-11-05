@@ -112,50 +112,81 @@ func (s *Server) baselineFor(serial string) map[string]struct{} {
 	return s.baseline[serial]
 }
 
+// listingEnd follows a listing ListPackages trusts. adb without shell_v2 can
+// drop mid-listing and still exit 0, leaving a short list of good-looking lines.
+const listingEnd = "sair-listing-end"
+
 // ListPackages is the phone's third-party packages, for a later ResetPackages
-// to keep. Anything but a clean listing is an error, as is a blank one pm can't
-// back up: taken for an empty one, it would have that reset uninstall every app
-// the phone's owner has.
+// to keep. Anything but a complete listing is an error, as is a blank one pm
+// can't back up: taken for what the phone has, it would have that reset
+// uninstall what it left out, up to every app the phone's owner has.
 func (s *Server) ListPackages(ctx context.Context, req *pb.ListPackagesRequest) (*pb.ListPackagesResponse, error) {
 	if err := s.checkSerial(req.Serial); err != nil {
 		return nil, err
 	}
-	out, err := s.shell(ctx, req.Serial, "pm list packages -3")
+	pkgs, err := s.completeListing(ctx, req.Serial, "-3")
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "%s: list packages: %v", req.Serial, err)
+		return nil, err
 	}
-	for _, line := range strings.Split(out, "\n") {
-		if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "package:") {
-			return nil, status.Errorf(codes.Internal, "%s: list packages: %s", req.Serial, line)
-		}
-	}
-	pkgs := parsePackages(out)
 	if len(pkgs) == 0 {
 		// Blank with exit 0 is also what a booting phone says: believe it only
 		// if pm can name a system package.
-		sys, err := s.shell(ctx, req.Serial, "pm list packages -s")
+		sys, err := s.completeListing(ctx, req.Serial, "-s")
 		if err != nil {
-			return nil, status.Errorf(codes.Internal, "%s: list system packages: %v", req.Serial, err)
+			return nil, err
 		}
-		if len(parsePackages(sys)) == 0 {
+		if len(sys) == 0 {
 			return nil, status.Errorf(codes.Internal, "%s: package manager listed nothing, not even system packages", req.Serial)
 		}
 	}
 	return &pb.ListPackagesResponse{Packages: slices.Sorted(maps.Keys(pkgs))}, nil
 }
 
+// completeListing runs `pm list packages` with flag and returns the packages,
+// or Internal unless every line is a package and listingEnd came last.
+func (s *Server) completeListing(ctx context.Context, serial, flag string) (map[string]struct{}, error) {
+	out, err := s.shell(ctx, serial, "pm list packages "+flag+" && echo "+listingEnd)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%s: list packages %s: %v", serial, flag, err)
+	}
+	var lines []string
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) == 0 || lines[len(lines)-1] != listingEnd {
+		return nil, status.Errorf(codes.Internal, "%s: list packages %s: listing cut short", serial, flag)
+	}
+	pkgs := make(map[string]struct{}, len(lines)-1)
+	for _, line := range lines[:len(lines)-1] {
+		name, ok := strings.CutPrefix(line, "package:")
+		if !ok || name == "" {
+			return nil, status.Errorf(codes.Internal, "%s: list packages %s: unexpected line %q", serial, flag, line)
+		}
+		pkgs[name] = struct{}{}
+	}
+	return pkgs, nil
+}
+
 // ResetPackages uninstalls every third-party package not in the baseline, or
 // not in req.Since when that is present (what a relayed phone had before its
-// lock; then no baseline is needed), then force-stops and clears the configured
-// apps. Reports what went so the lock log shows what a job left behind. A package that refuses to go is
-// logged and skipped: one stubborn APK must not keep the rest on the phone.
+// lock; then no baseline is needed, and only the primary user's copy goes, since
+// the lender may have the package in a work profile), then force-stops and
+// clears the configured apps. Reports what went so the lock log shows what a job
+// left behind. A package that refuses to go is logged and skipped: one stubborn
+// APK must not keep the rest on the phone.
+//
+// Its own listing needs no listingEnd: a short one only uninstalls less.
 func (s *Server) ResetPackages(ctx context.Context, req *pb.ResetPackagesRequest) (*pb.ResetPackagesResponse, error) {
 	if err := s.checkSerial(req.Serial); err != nil {
 		return nil, err
 	}
 	var keep map[string]struct{}
+	uninstall := "pm uninstall "
 	if req.Since != nil {
 		keep = packageSet(req.Since.Packages)
+		uninstall += "--user 0 "
 	} else if keep = s.baselineFor(req.Serial); keep == nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "no baseline package set recorded for %s yet", req.Serial)
 	}
@@ -172,7 +203,7 @@ func (s *Server) ResetPackages(ctx context.Context, req *pb.ResetPackagesRequest
 		if _, ok := keep[pkg]; ok {
 			continue
 		}
-		out, err := s.shell(ctx, req.Serial, "pm uninstall "+shellQuote(pkg))
+		out, err := s.shell(ctx, req.Serial, uninstall+shellQuote(pkg))
 		if err != nil || !strings.HasPrefix(strings.TrimSpace(out), "Success") {
 			slog.Warn("uninstall failed; package stays on the phone", "serial", req.Serial, "package", pkg, "output", strings.TrimSpace(out), "error", err)
 			continue

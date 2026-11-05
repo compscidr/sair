@@ -219,6 +219,8 @@ type fakeDeviceSource struct {
 	listGate  chan struct{}
 	listCalls int
 	sinces    []*dspb.PackageSnapshot // one per ResetPackages
+	// baseline is what ResetPackages keeps with no since.
+	baseline []string
 }
 
 func (d *fakeDeviceSource) ListPackages(ctx context.Context, req *dspb.ListPackagesRequest) (*dspb.ListPackagesResponse, error) {
@@ -244,9 +246,13 @@ func (d *fakeDeviceSource) ResetPackages(_ context.Context, req *dspb.ResetPacka
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.sinces = append(d.sinces, req.Since)
+	keep := d.baseline
+	if req.Since != nil {
+		keep = req.Since.Packages
+	}
 	resp := &dspb.ResetPackagesResponse{}
 	for _, pkg := range slices.Sorted(maps.Keys(d.installed)) {
-		if !slices.Contains(req.GetSince().GetPackages(), pkg) {
+		if !slices.Contains(keep, pkg) {
 			delete(d.installed, pkg)
 			resp.Removed = append(resp.Removed, pkg)
 		}
@@ -912,11 +918,157 @@ func TestRelayedResetRemovesOnlyWhatAppearedDuringTheLock(t *testing.T) {
 // is not the same as none: the guest's app still goes.
 func TestRelayedResetWithEmptySnapshotStillResets(t *testing.T) {
 	h := snapshotHarness(t)
+	h.ds.baseline = []string{"com.guest.app"} // an absent since would keep it
 	h.relay("LOCAL1", "l1")
 	h.ds.install("com.guest.app")
 	h.m.OnLockExpired("l1")
 	if got := h.installed(); len(got) != 0 {
 		t.Errorf("installed = %q", got)
+	}
+	if _, _, sinces := h.ds.stats(); len(sinces) != 1 || sinces[0] == nil {
+		t.Errorf("sinces = %v, want one, present though empty", sinces)
+	}
+}
+
+// The first listing is the only one taken before the job's first command, so a
+// failure isn't retried: a later listing could hold the job's apps, and the
+// reset would keep them.
+func TestFailedSnapshotIsNotRetried(t *testing.T) {
+	h := snapshotHarness(t, "com.owner.hand")
+	h.ds.listErr = status.Error(codes.Internal, "pm failed")
+	h.relay("LOCAL1", "l1")
+	h.relay("LOCAL1", "l1")
+	if _, lists, _ := h.ds.stats(); lists != 1 {
+		t.Errorf("lists = %d, want 1", lists)
+	}
+}
+
+// packageResetEvents is the harness's PACKAGE_RESET events.
+func (h *relayResetHarness) packageResetEvents() []*pb.BenchEvent {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []*pb.BenchEvent
+	for _, e := range h.events {
+		if e.Kind == pb.BenchEventKind_BENCH_EVENT_KIND_PACKAGE_RESET {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// noReboot fails the test when a reset reboots the phone or asks whether a
+// radio is wedged, and returns a func that says how often the failure excerpt
+// was collected, the one thing a failed reset step does beyond its reporting.
+func (h *relayResetHarness) noReboot(t *testing.T) (excerpts func() int) {
+	t.Helper()
+	h.m.rebootIfWedged = func(string, string) (bool, error) {
+		t.Error("asked to reboot a wedged phone")
+		return false, nil
+	}
+	h.m.rebootIfStale = func(string) (bool, time.Duration, error) { return false, 0, nil }
+	n := 0
+	h.m.recentSourceLog = func(string) ([]string, error) { n++; return nil, nil }
+	return func() int {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		for _, e := range h.events {
+			if e.Kind == pb.BenchEventKind_BENCH_EVENT_KIND_REBOOT {
+				t.Errorf("reboot event %v", e)
+			}
+		}
+		return n
+	}
+}
+
+// A relayed lock's packages left on the phone are a reported failure, not a
+// silent one, and nothing about them justifies rebooting the phone.
+func TestRelayedResetReportsPackagesItLeft(t *testing.T) {
+	t.Run("no snapshot", func(t *testing.T) {
+		h := newRelayResetHarness(t) // an older device source
+		excerpts := h.noReboot(t)
+		h.relay("LOCAL1", "l1")
+		h.m.OnLockExpired("l1")
+		events := h.packageResetEvents()
+		if len(events) != 1 || events[0].Outcome != "failed" || events[0].Serial != "LOCAL1" || events[0].LockId != "l1" || !strings.Contains(events[0].Detail, "no package snapshot") {
+			t.Errorf("events = %v, want one failed, saying no snapshot", events)
+		}
+		if n := excerpts(); n != 1 {
+			t.Errorf("failure excerpts = %d, want 1", n)
+		}
+	})
+	t.Run("phone gone", func(t *testing.T) {
+		h := snapshotHarness(t)
+		excerpts := h.noReboot(t)
+		h.m.resetPackages = func(string, *dspb.PackageSnapshot) ([]string, []string, error) {
+			return nil, nil, status.Error(codes.NotFound, "device LOCAL1 is not attached to this proxy")
+		}
+		h.relay("LOCAL1", "l1")
+		h.m.OnLockExpired("l1")
+		events := h.packageResetEvents()
+		if len(events) != 1 || events[0].Outcome != "failed" || !strings.Contains(events[0].Detail, "not attached") {
+			t.Errorf("events = %v, want one failed, saying the phone is gone", events)
+		}
+		if n := excerpts(); n != 1 {
+			t.Errorf("failure excerpts = %d, want 1", n)
+		}
+	})
+	t.Run("local lock's NotFound stays quiet", func(t *testing.T) {
+		h := snapshotHarness(t)
+		h.m.resetPackages = func(string, *dspb.PackageSnapshot) ([]string, []string, error) {
+			return nil, nil, status.Error(codes.NotFound, "not attached")
+		}
+		if _, err := h.m.CreateScopedPort("l1", map[string]struct{}{"LOCAL1": {}}, nil); err != nil {
+			t.Fatal(err)
+		}
+		h.m.CloseScopedPort("l1")
+		if events := h.packageResetEvents(); len(events) != 0 {
+			t.Errorf("events = %v", events)
+		}
+	})
+}
+
+// A relay under a new lock before the old lock's reset means that reset never
+// runs. What the old lock left can't be told from the owner's, so it stays, but
+// it is said out loud.
+func TestReplacedRecordWarnsWhatMayBeLeft(t *testing.T) {
+	h := snapshotHarness(t, "com.owner.hand")
+	h.relay("LOCAL1", "l1")
+	h.ds.install("com.guest.app")
+	logs := &logBuffer{}
+	defer captureSlog(logs)()
+	h.relay("LOCAL1", "l2")
+	for _, want := range []string{
+		"serial=LOCAL1 lockId=l2 previousLockId=l1 packages=[com.guest.app]",
+		"serial=LOCAL1 lockId=l2 previousLockId=l1\n",
+	} {
+		if !logs.contains(want) {
+			t.Errorf("no %q in %q", want, logs.String())
+		}
+	}
+	if logs.contains("com.owner.hand") {
+		t.Errorf("named a package the old lock had too: %q", logs.String())
+	}
+	if got := h.installed(); !slices.Equal(got, []string{"com.guest.app", "com.owner.hand"}) {
+		t.Errorf("installed = %q: the warning must remove nothing", got)
+	}
+}
+
+// With no old snapshot to compare, only the replacement itself is warned of.
+func TestReplacedRecordWithoutSnapshotWarnsOnly(t *testing.T) {
+	h := snapshotHarness(t, "com.owner.hand")
+	h.ds.listErr = status.Error(codes.Internal, "pm failed")
+	h.relay("LOCAL1", "l1")
+	h.ds.mu.Lock()
+	h.ds.listErr = nil
+	h.ds.mu.Unlock()
+	logs := &logBuffer{}
+	defer captureSlog(logs)()
+	h.relay("LOCAL1", "l2")
+	if !logs.contains("lockId=l2 previousLockId=l1") {
+		t.Errorf("no warning: %q", logs.String())
+	}
+	if logs.contains("com.owner.hand") {
+		t.Errorf("with no old snapshot nothing can be blamed on it: %q", logs.String())
 	}
 }
 

@@ -196,17 +196,27 @@ you:
   the proxy log and the lock's log on the orchestrator, naming any Wi-Fi
   suggestion that went with a package. This runs before the Wi-Fi reset, so a
   suggestion a test app leaked for the bench network is gone before the reset
-  waits for the phone to be offline. A phone relayed to a borrower is different:
-  the first relay under a lock lists its third-party packages, and when the lock
-  ends only what is not on that list is uninstalled, so an app its owner
-  installed by hand stays, whenever it was installed. If that list could not be
-  read (a device source older than the proxy, say), no package is uninstalled
-  and the proxy logs a warning.
+  waits for the phone to be offline.
+- **A phone relayed to a borrower** resets differently: the first relay under a
+  lock lists its third-party packages, and when the lock ends only what is not
+  on that list is uninstalled, for the primary user only. An app on the phone
+  before a lock's first relay stays; one installed during the lock goes, whoever
+  installed it. `BASELINE_PACKAGES` has no effect on this reset, but a local or
+  guest-key lock on the same phone still resets to the baseline, so list apps to
+  keep in `BASELINE_PACKAGES`. What was removed goes to the proxy log and the
+  bench events, not the lock's log, which is on the holder's proxy. Without that
+  list (it could not be read, the device source is older than the proxy, or no
+  relay got that far) nothing is uninstalled: the proxy logs a warning and
+  reports a failed package reset. Leftovers can then survive until a local lock,
+  because the next borrower's list includes them, as it does when a relay under
+  a new lock arrives before the previous lock's reset (the proxy warns, naming
+  what it suspects).
 - **On acquire** the same cleanup runs first (reverse forwards, packages),
   before the Wi-Fi check. A job that never released, because it had no
   `if: always()` release step, its runner died, or the proxy was down when
   the lock expired, is cleaned up by the next job, whose lock log then shows
-  `sair: uninstalled … (left by an earlier job)`.
+  `sair: uninstalled … (left by an earlier job)`. This is local locks only: a
+  relayed lock's next job cleans up nothing.
 - **No leaked UiAutomation**, on release and on acquire: a killed `am
   instrument` or a leftover uiautomator server can leave a UiAutomation
   registered, failing every later instrumentation with `UiAutomationService
@@ -419,7 +429,7 @@ modification.
 | `WIFI_PING_HOST` | `dns.google` | Must answer a ping when a phone is online and not when offline; a hostname also checks DNS, set an IP to skip that |
 | `WIFI_CONNECT_TIMEOUT_SECONDS` | `60` | How long Wi-Fi on / acquire waits for a phone to be online |
 | `WIFI_DISCONNECT_TIMEOUT_SECONDS` | `20` | How long Wi-Fi off / release / `--no-wifi` acquire waits for a phone to be offline |
-| `BASELINE_PACKAGES` | — | Third-party packages kept on release, comma-separated. Unset: each phone's packages are recorded when first seen, minus installed test-package/target pairs. Set but empty: keep none. Set it explicitly on a bench that was in use before this version |
+| `BASELINE_PACKAGES` | — | Third-party packages kept on release, comma-separated. Unset: each phone's packages are recorded when first seen, minus installed test-package/target pairs. Set but empty: keep none. Set it explicitly on a bench that was in use before this version. No effect on a relayed lock's reset, which keeps what the phone had before that lock's first relay |
 | `RESET_FORCE_STOP` | `com.android.chrome,com.google.android.gm` | Apps force-stopped on release |
 | `RESET_CLEAR_PACKAGES` | — | Apps whose data is cleared (`pm clear`) on release. Off by default: clearing Chrome on a signed-in phone signs it out |
 | `REBOOT_UPTIME_HOURS` | `24` | Reboot a phone on release once it has been up this long, before the next job gets it. `0` never reboots |

@@ -705,13 +705,16 @@ func (m *ScopedPortManager) waitForSource(serial string) {
 //
 // A relayed phone keeps since, what it had before the lock. With no since its
 // packages are left alone: failing to clean is recoverable, deleting its
-// owner's apps is not.
+// owner's apps is not. That is reported as a failed step, whose only effect in
+// resetDevice is the log excerpt: only a failed Wi-Fi reset can reboot a phone.
 func (m *ScopedPortManager) cleanDevice(sp *ScopedPort, serial, note string, since *dspb.PackageSnapshot) (failed bool) {
 	if err := m.removeReverse(serial); err != nil && status.Code(err) != codes.NotFound {
 		slog.Warn("removing reverse forwards failed", "serial", serial, "lockId", sp.LockID, "error", err)
 	}
 	if sp.relayed && since == nil {
 		slog.Warn("no package snapshot for this relayed lock; leaving the phone's packages alone", "serial", serial, "lockId", sp.LockID)
+		m.event(&pb.BenchEvent{Kind: pb.BenchEventKind_BENCH_EVENT_KIND_PACKAGE_RESET, Serial: serial, LockId: sp.LockID, Outcome: "failed", Detail: "no package snapshot, nothing uninstalled"})
+		failed = true
 	} else if m.cleanPackages(sp, serial, note, since) {
 		failed = true
 	}
@@ -745,8 +748,14 @@ func (m *ScopedPortManager) cleanPackages(sp *ScopedPort, serial, note string, s
 		sp.Log.Record(&pb.LockLogEntry{TimestampMs: time.Now().UnixMilli(), Serial: serial, Service: packagesRemovedService(removed, suggestions) + note})
 		event.Detail = strings.Join(removed, ", ")
 		m.event(event)
+	case c == codes.NotFound && since != nil:
+		// A relayed lock has no next acquire here to clean up after it.
+		slog.Warn("phone gone at its relayed lock's reset; a job's APKs may stay on it", "serial", serial, "lockId", sp.LockID, "error", err)
+		event.Outcome, event.Detail = "failed", errText(err)
+		m.event(event)
+		failed = true
 	case err == nil, c == codes.NotFound, c == codes.Unimplemented:
-		// Nothing left behind, a relayed device, or an older device source.
+		// Nothing left behind, a phone with no source here, or an older device source.
 	default:
 		slog.Warn("package reset failed; a job's APKs may stay on the phone", "serial", serial, "lockId", sp.LockID, "error", err)
 		event.Outcome, event.Detail = "failed", errText(err)

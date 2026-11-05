@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"slices"
 	"sync"
 	"time"
 
@@ -222,19 +223,24 @@ func relayErr(err error) error {
 
 // relayRecord is one lock's relay of one phone. Its snapshot is the phone's
 // third-party packages before that lock's first command, which is all the
-// lock's reset may keep: what the phone's owner installed by hand is in it.
+// lock's reset may keep: an app its owner installed before then is in it.
 type relayRecord struct {
 	lockID   string
 	once     sync.Once
 	snapshot *dspb.PackageSnapshot // written inside once; nil means there is none
+	prev     *relayRecord          // the record this one replaced; used inside once
 }
 
 // takeSnapshot lists the phone's packages unless this record has already had
 // its one chance, and returns once the snapshot is settled either way, so a
 // concurrent relay of the record waits for it. A failure leaves none: the
-// reset then skips the packages, and the job proceeds.
+// reset then skips the packages, and the job proceeds. A package missing from
+// the record this one replaced is named as possibly left by that lock; it is in
+// this snapshot, so it stays.
 func (rec *relayRecord) takeSnapshot(client dspb.DeviceSourceClient, serial string) {
 	rec.once.Do(func() {
+		prev := rec.prev
+		rec.prev = nil
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		resp, err := client.ListPackages(ctx, &dspb.ListPackagesRequest{Serial: serial})
@@ -243,6 +249,15 @@ func (rec *relayRecord) takeSnapshot(client dspb.DeviceSourceClient, serial stri
 			return
 		}
 		rec.snapshot = &dspb.PackageSnapshot{Packages: resp.Packages}
+		if prev == nil {
+			return
+		}
+		if old := prev.settledSnapshot(); old != nil {
+			left := slices.DeleteFunc(slices.Clone(resp.Packages), func(pkg string) bool { return slices.Contains(old.Packages, pkg) })
+			if len(left) > 0 {
+				slog.Warn("relay: packages possibly left by the previous lock stay on the phone", "serial", serial, "lockId", rec.lockID, "previousLockId", prev.lockID, "packages", left)
+			}
+		}
 	})
 }
 
@@ -255,10 +270,11 @@ func (rec *relayRecord) settledSnapshot() *dspb.PackageSnapshot {
 }
 
 // relayRecordFor returns serial's record for lockID, replacing one for any
-// other lock.
+// other lock. That lock's reset then won't run, so what it left stays: warned
+// of here, and by takeSnapshot with names.
 func (r *CommandRouter) relayRecordFor(serial, lockID string) *relayRecord {
-	fresh := &relayRecord{lockID: lockID}
 	for {
+		fresh := &relayRecord{lockID: lockID}
 		v, loaded := r.relayLocks.LoadOrStore(serial, fresh)
 		if !loaded {
 			return fresh
@@ -267,7 +283,9 @@ func (r *CommandRouter) relayRecordFor(serial, lockID string) *relayRecord {
 		if rec.lockID == lockID {
 			return rec
 		}
+		fresh.prev = rec
 		if r.relayLocks.CompareAndSwap(serial, rec, fresh) {
+			slog.Warn("relay: phone relayed under a new lock before the previous lock's reset, which now won't run", "serial", serial, "lockId", lockID, "previousLockId", rec.lockID)
 			return fresh
 		}
 	}
@@ -289,9 +307,9 @@ func (r *CommandRouter) takeRelayRecord(serial, lockID string) *relayRecord {
 // ServeRelay answers the orchestrator's relay_open for one of this proxy's
 // devices: joins the owner half of the tunnel, waits out any reset of the
 // phone, snapshots its packages if this lock hasn't yet, opens the device
-// through the local device source, and pumps until either side ends. Failures before joining are reported as relay_failed and
-// a failure to open the device as a FAIL in the tunnel, so either way the
-// holder's client gets a FAIL.
+// through the local device source, and pumps until either side ends. Failures
+// before joining are reported as relay_failed and a failure to open the device
+// as a FAIL in the tunnel, so either way the holder's client gets a FAIL.
 func (r *CommandRouter) ServeRelay(open *pb.RelayOpen) {
 	fail := func(msg string) {
 		slog.Warn("relay: cannot serve", "tunnelId", open.TunnelId, "serial", open.Serial, "error", msg)
@@ -375,7 +393,7 @@ func (r *CommandRouter) ServeRelay(open *pb.RelayOpen) {
 		failInBand(err.Error())
 		return
 	}
-	// After the wait, so a previous guest's apps have gone; before the device
+	// After the wait, so what a reset just removed isn't in it; before the device
 	// opens, so the first command can't install anything first.
 	rec.takeSnapshot(client, open.Serial)
 	if tunnelDead() { // a reset may be waiting on the snapshot: same reasoning
