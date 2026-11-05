@@ -26,6 +26,7 @@ const (
 	DeviceSource_ForwardToDevice_FullMethodName   = "/devicesource.DeviceSource/ForwardToDevice"
 	DeviceSource_SetWifi_FullMethodName           = "/devicesource.DeviceSource/SetWifi"
 	DeviceSource_ResetPackages_FullMethodName     = "/devicesource.DeviceSource/ResetPackages"
+	DeviceSource_ListPackages_FullMethodName      = "/devicesource.DeviceSource/ListPackages"
 	DeviceSource_Wake_FullMethodName              = "/devicesource.DeviceSource/Wake"
 	DeviceSource_RebootIfStale_FullMethodName     = "/devicesource.DeviceSource/RebootIfStale"
 	DeviceSource_ResetBluetooth_FullMethodName    = "/devicesource.DeviceSource/ResetBluetooth"
@@ -54,8 +55,12 @@ type DeviceSourceClient interface {
 	// (recorded when the device was first seen, or BASELINE_PACKAGES), and
 	// force-stop / clear the configured apps. Used on release, before the
 	// Wi-Fi reset, so a suggestion a removed app registered goes with it.
+	// With `since`, that snapshot is kept instead of the baseline. Otherwise
 	// FailedPrecondition when no baseline is known for the device yet.
 	ResetPackages(ctx context.Context, in *ResetPackagesRequest, opts ...grpc.CallOption) (*ResetPackagesResponse, error)
+	// The device's third-party packages right now, for a ResetPackages `since`.
+	// Unimplemented from a device source that would ignore `since`.
+	ListPackages(ctx context.Context, in *ListPackagesRequest, opts ...grpc.CallOption) (*ListPackagesResponse, error)
 	// Wake the screen and dismiss the keyguard, verified (sair#92). Used on
 	// acquire and after the release reset, so a job never gets a phone asleep
 	// or on its lock screen. FailedPrecondition when the keyguard stays up,
@@ -189,6 +194,16 @@ func (c *deviceSourceClient) ResetPackages(ctx context.Context, in *ResetPackage
 	return out, nil
 }
 
+func (c *deviceSourceClient) ListPackages(ctx context.Context, in *ListPackagesRequest, opts ...grpc.CallOption) (*ListPackagesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListPackagesResponse)
+	err := c.cc.Invoke(ctx, DeviceSource_ListPackages_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *deviceSourceClient) Wake(ctx context.Context, in *WakeRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
@@ -278,8 +293,12 @@ type DeviceSourceServer interface {
 	// (recorded when the device was first seen, or BASELINE_PACKAGES), and
 	// force-stop / clear the configured apps. Used on release, before the
 	// Wi-Fi reset, so a suggestion a removed app registered goes with it.
+	// With `since`, that snapshot is kept instead of the baseline. Otherwise
 	// FailedPrecondition when no baseline is known for the device yet.
 	ResetPackages(context.Context, *ResetPackagesRequest) (*ResetPackagesResponse, error)
+	// The device's third-party packages right now, for a ResetPackages `since`.
+	// Unimplemented from a device source that would ignore `since`.
+	ListPackages(context.Context, *ListPackagesRequest) (*ListPackagesResponse, error)
 	// Wake the screen and dismiss the keyguard, verified (sair#92). Used on
 	// acquire and after the release reset, so a job never gets a phone asleep
 	// or on its lock screen. FailedPrecondition when the keyguard stays up,
@@ -349,6 +368,9 @@ func (UnimplementedDeviceSourceServer) SetWifi(context.Context, *WifiRequest) (*
 }
 func (UnimplementedDeviceSourceServer) ResetPackages(context.Context, *ResetPackagesRequest) (*ResetPackagesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ResetPackages not implemented")
+}
+func (UnimplementedDeviceSourceServer) ListPackages(context.Context, *ListPackagesRequest) (*ListPackagesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListPackages not implemented")
 }
 func (UnimplementedDeviceSourceServer) Wake(context.Context, *WakeRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method Wake not implemented")
@@ -471,6 +493,24 @@ func _DeviceSource_ResetPackages_Handler(srv interface{}, ctx context.Context, d
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DeviceSourceServer).ResetPackages(ctx, req.(*ResetPackagesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DeviceSource_ListPackages_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListPackagesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DeviceSourceServer).ListPackages(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DeviceSource_ListPackages_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DeviceSourceServer).ListPackages(ctx, req.(*ListPackagesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -619,6 +659,10 @@ var DeviceSource_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ResetPackages",
 			Handler:    _DeviceSource_ResetPackages_Handler,
+		},
+		{
+			MethodName: "ListPackages",
+			Handler:    _DeviceSource_ListPackages_Handler,
 		},
 		{
 			MethodName: "Wake",

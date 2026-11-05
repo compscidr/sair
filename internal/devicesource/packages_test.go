@@ -3,6 +3,7 @@ package devicesource
 import (
 	"context"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -84,6 +85,191 @@ func TestResetPackagesNeedsABaseline(t *testing.T) {
 	if status.Code(err) != codes.FailedPrecondition || len(*cmds) != 0 {
 		t.Fatalf("err = %v, cmds = %q; want FailedPrecondition and no commands", err, *cmds)
 	}
+}
+
+// A relayed lock's snapshot replaces the baseline: what the phone had before
+// the lock stays and anything else goes, even a package in the baseline (a
+// reinstall during the lock). It needs no baseline, and the rest of the reset
+// still runs.
+func TestResetPackagesSince(t *testing.T) {
+	const listed = "package:com.bench.keep\npackage:com.owner.hand\npackage:com.job.app\n"
+	uninstalls := map[string]string{
+		"pm list packages -3":                    listed,
+		listThirdParty:                           listed + "sair-listing-end\n",
+		"pm uninstall 'com.bench.keep'":          "Success",
+		"pm uninstall 'com.owner.hand'":          "Success",
+		"pm uninstall 'com.job.app'":             "Success",
+		"pm uninstall --user 0 'com.bench.keep'": "Success",
+		"pm uninstall --user 0 'com.owner.hand'": "Success",
+		"pm uninstall --user 0 'com.job.app'":    "Success",
+	}
+	base := map[string]map[string]struct{}{"ABC": packageSet([]string{"com.bench.keep"})}
+	for _, tt := range []struct {
+		name     string
+		baseline map[string]map[string]struct{}
+		since    *pb.PackageSnapshot
+		want     []string
+	}{
+		{"keeps the snapshot, not the baseline", base, &pb.PackageSnapshot{Packages: []string{"com.owner.hand"}}, []string{"com.bench.keep", "com.job.app"}},
+		{"empty keeps nothing", base, &pb.PackageSnapshot{}, []string{"com.bench.keep", "com.job.app", "com.owner.hand"}},
+		{"absent uses the baseline", base, nil, []string{"com.job.app", "com.owner.hand"}},
+		{"no baseline needed", nil, &pb.PackageSnapshot{Packages: []string{"com.bench.keep", "com.owner.hand"}}, []string{"com.job.app"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &Server{baseline: tt.baseline, stopPackages: []string{"com.android.chrome"}}
+			cmds := fakeShell(s, uninstalls)
+			resp, err := s.ResetPackages(context.Background(), &pb.ResetPackagesRequest{Serial: "ABC", Since: tt.since})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(resp.Removed, tt.want) {
+				t.Errorf("removed = %v, want %v", resp.Removed, tt.want)
+			}
+			if !slices.Contains(*cmds, "am force-stop 'com.android.chrome'") {
+				t.Errorf("rest of the reset did not run: %q", *cmds)
+			}
+			// With since, only the primary user's copy goes: the lender can have
+			// the same package in a work profile. The baseline path is unchanged.
+			prefix := "pm uninstall "
+			if tt.since != nil {
+				prefix += "--user 0 "
+			}
+			for _, pkg := range tt.want {
+				if cmd := prefix + "'" + pkg + "'"; !slices.Contains(*cmds, cmd) {
+					t.Errorf("no %q in %q", cmd, *cmds)
+				}
+			}
+		})
+	}
+}
+
+// A listing cut off inside a name can parse as a real system package, which -3
+// never lists, so no snapshot has it, and `pm uninstall --user 0` removes system
+// apps too. So with since, a cut listing uninstalls nothing.
+func TestResetPackagesSinceRefusesACutListing(t *testing.T) {
+	for _, out := range []string{
+		"package:com.owner.hand\npackage:com.google.android.apps.docs",
+		"package:com.owner.hand\npackage:com.job.app\n",
+		"package:com.owner.hand\nError: Binder died\nsair-listing-end\n",
+	} {
+		s := &Server{stopPackages: []string{"com.android.chrome"}}
+		cmds := fakeShell(s, map[string]string{listThirdParty: out, "pm list packages -3": out})
+		_, err := s.ResetPackages(context.Background(), &pb.ResetPackagesRequest{Serial: "ABC", Since: &pb.PackageSnapshot{Packages: []string{"com.owner.hand"}}})
+		if status.Code(err) != codes.Internal {
+			t.Errorf("%q: err = %v, want Internal", out, err)
+		}
+		if i := slices.IndexFunc(*cmds, func(c string) bool { return strings.HasPrefix(c, "pm uninstall") }); i >= 0 {
+			t.Errorf("%q: ran %q", out, (*cmds)[i])
+		}
+	}
+}
+
+// The baseline path keeps its plain listing: local locks are unaffected.
+func TestResetPackagesBaselineListsPlainly(t *testing.T) {
+	s := &Server{baselineOverride: packageSet([]string{"com.bench.keep"})}
+	cmds := fakeShell(s, map[string]string{"pm list packages -3": "package:com.bench.keep\n"})
+	if _, err := s.ResetPackages(context.Background(), &pb.ResetPackagesRequest{Serial: "ABC"}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(*cmds, "pm list packages -3") {
+		t.Errorf("commands = %q", *cmds)
+	}
+}
+
+const (
+	listThirdParty = "pm list packages -3 && echo sair-listing-end"
+	listSystem     = "pm list packages -s && echo sair-listing-end"
+)
+
+func TestListPackages(t *testing.T) {
+	s := &Server{}
+	fakeShell(s, map[string]string{listThirdParty: "package:com.z\npackage:com.a\npackage:com.m\nsair-listing-end\n"})
+	resp, err := s.ListPackages(context.Background(), &pb.ListPackagesRequest{Serial: "ABC"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"com.a", "com.m", "com.z"}; !reflect.DeepEqual(resp.Packages, want) {
+		t.Errorf("packages = %v, want %v", resp.Packages, want)
+	}
+}
+
+// A listing that failed or stopped short without saying so must not read as
+// what the phone has: the reset uninstalls whatever a snapshot leaves out. adb
+// without shell_v2 can drop mid-listing and still exit 0.
+func TestListPackagesRefusesAnIncompleteListing(t *testing.T) {
+	for _, tt := range []struct{ name, out string }{
+		{"blank", ""},
+		{"no end line", "package:com.owner.app\npackage:com.owner.tool\n"},
+		{"cut off in the last line", "package:com.owner.app\npackage:com.owner.tw"},
+		{"cut off into the end line", "package:com.owner.app\nsair-listing"},
+		{"end line glued to a package", "package:com.owner.appsair-listing-end\n"},
+		{"an error", "Error: Could not access the Package Manager.  Is the system running?\nsair-listing-end\n"},
+		{"packages and an error", "package:com.owner.app\nError: Binder died\nsair-listing-end\n"},
+		{"end line before the last", "package:com.owner.app\nsair-listing-end\npackage:com.owner.tool\n"},
+		{"a package with no name", "package:\nsair-listing-end\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &Server{}
+			fakeShell(s, map[string]string{listThirdParty: tt.out, listSystem: "package:android\nsair-listing-end\n"})
+			if _, err := s.ListPackages(context.Background(), &pb.ListPackagesRequest{Serial: "ABC"}); status.Code(err) != codes.Internal {
+				t.Errorf("err = %v, want Internal", err)
+			}
+		})
+	}
+	s := &Server{}
+	fakeShell(s, nil, "pm list packages")
+	if _, err := s.ListPackages(context.Background(), &pb.ListPackagesRequest{Serial: "ABC"}); status.Code(err) != codes.Internal {
+		t.Errorf("shell failure: err = %v, want Internal", err)
+	}
+}
+
+// A blank third-party listing counts only if pm can name a system package:
+// mid-boot both are blank, and an empty snapshot would remove every app.
+func TestListPackagesConfirmsABlankListing(t *testing.T) {
+	const end = "sair-listing-end\n"
+	req := &pb.ListPackagesRequest{Serial: "ABC"}
+	for _, tt := range []struct{ name, system string }{
+		{"system listing blank", end},
+		{"system listing is an error", "Error: Could not access the Package Manager.\n" + end},
+		{"system listing has no end line", "package:android\n"},
+		{"system listing mixes in an error", "package:android\nError: Binder died\n" + end},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &Server{}
+			cmds := fakeShell(s, map[string]string{listThirdParty: end, listSystem: tt.system})
+			if _, err := s.ListPackages(context.Background(), req); status.Code(err) != codes.Internal {
+				t.Errorf("err = %v, want Internal", err)
+			}
+			if want := []string{listThirdParty, listSystem}; !reflect.DeepEqual(*cmds, want) {
+				t.Errorf("commands = %q, want %q", *cmds, want)
+			}
+		})
+	}
+	t.Run("system listing fails", func(t *testing.T) {
+		s := &Server{}
+		fakeShell(s, map[string]string{listThirdParty: end}, listSystem)
+		if _, err := s.ListPackages(context.Background(), req); status.Code(err) != codes.Internal {
+			t.Errorf("err = %v, want Internal", err)
+		}
+	})
+	t.Run("no third-party apps", func(t *testing.T) {
+		s := &Server{}
+		fakeShell(s, map[string]string{listThirdParty: end, listSystem: "package:android\n" + end})
+		resp, err := s.ListPackages(context.Background(), req)
+		if err != nil || len(resp.GetPackages()) != 0 {
+			t.Errorf("packages = %v, err = %v; want an empty list", resp.GetPackages(), err)
+		}
+	})
+	t.Run("third-party apps need no confirming", func(t *testing.T) {
+		s := &Server{}
+		cmds := fakeShell(s, map[string]string{listThirdParty: "package:com.a\n" + end})
+		if _, err := s.ListPackages(context.Background(), req); err != nil {
+			t.Fatal(err)
+		}
+		if want := []string{listThirdParty}; !reflect.DeepEqual(*cmds, want) {
+			t.Errorf("commands = %q, want %q", *cmds, want)
+		}
+	})
 }
 
 // BASELINE_PACKAGES replaces the recorded set for every phone; nothing is

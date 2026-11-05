@@ -21,8 +21,12 @@ service DeviceSource {
   // (recorded when the device was first seen, or BASELINE_PACKAGES), and
   // force-stop / clear the configured apps. Used on release, before the
   // Wi-Fi reset, so a suggestion a removed app registered goes with it.
+  // With `since`, that snapshot is kept instead of the baseline. Otherwise
   // FailedPrecondition when no baseline is known for the device yet.
   rpc ResetPackages(ResetPackagesRequest) returns (ResetPackagesResponse) {}
+  // The device's third-party packages right now, for a ResetPackages `since`.
+  // Unimplemented from a device source that would ignore `since`.
+  rpc ListPackages(ListPackagesRequest) returns (ListPackagesResponse) {}
   // Wake the screen and dismiss the keyguard, verified (sair#92). Used on
   // acquire and after the release reset, so a job never gets a phone asleep
   // or on its lock screen. FailedPrecondition when the keyguard stays up,
@@ -116,6 +120,22 @@ message UiAutomationResponse {
 
 message ResetPackagesRequest {
   string serial = 1;
+  // Keep these packages instead of the baseline. Present but empty keeps none;
+  // absent uses the baseline.
+  PackageSnapshot since = 2;
+}
+
+message PackageSnapshot {
+  repeated string packages = 1;
+}
+
+message ListPackagesRequest {
+  string serial = 1;
+}
+
+message ListPackagesResponse {
+  // Third-party packages, sorted.
+  repeated string packages = 1;
 }
 
 message ResetPackagesResponse {

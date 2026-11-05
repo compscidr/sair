@@ -55,6 +55,12 @@ type CommandRouter struct {
 	// waitReset blocks while a released lock's reset still runs on serial.
 	// Set by NewScopedPortManager, which owns the per-serial lock.
 	waitReset func(serial string)
+	// relayLocks maps a serial to the *relayRecord of the latest lock ServeRelay
+	// relayed it under, for the phone's reset when that lock ends; an earlier
+	// lock's end then leaves it alone, the phone is the next job's.
+	// ponytail: an older orchestrator never pushes the owner LockExpired, so an
+	// entry can outlive its lock; the ceiling is one per serial ever relayed.
+	relayLocks sync.Map
 
 	// events queues bench events for the session (see Event); nil until
 	// StartSession, which drops them.
@@ -285,9 +291,10 @@ func (r *CommandRouter) AddReverseForward(serial string, port int) error {
 
 // ResetPackages uninstalls what a job installed on a local device, through its
 // device source, and returns the packages and the Wi-Fi suggestions that went
-// with them. NotFound for a device this proxy has no source for; Unimplemented
-// from a device source that predates it.
-func (r *CommandRouter) ResetPackages(serial string) (removed, suggestions []string, err error) {
+// with them. It keeps since if given, else the device's baseline. NotFound for
+// a device this proxy has no source for; Unimplemented from a device source
+// that predates it.
+func (r *CommandRouter) ResetPackages(serial string, since *dspb.PackageSnapshot) (removed, suggestions []string, err error) {
 	addr := ""
 	if r.ResolveSource != nil {
 		addr = r.ResolveSource(serial)
@@ -301,7 +308,7 @@ func (r *CommandRouter) ResetPackages(serial string) (removed, suggestions []str
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	resp, err := client.ResetPackages(ctx, &dspb.ResetPackagesRequest{Serial: serial})
+	resp, err := client.ResetPackages(ctx, &dspb.ResetPackagesRequest{Serial: serial, Since: since})
 	if err != nil {
 		return nil, nil, err
 	}

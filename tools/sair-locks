@@ -133,5 +133,5 @@ if d.get("queue"):
     table("Queued", ["SERIALS", "WAITING"], [[",".join(q["serials"]), ago(now - q["waiting_ms"])] for q in d["queue"]])
 table("Ended in the last hour", ["LOCK", "SERIALS", "PROXY", "KEY", "ENDED", "HOW", "STATUS", "ORIGIN"],
       [[l["lock_id"], ",".join(l["serials"]), l.get("proxy") or "-", key(l), ago(l.get("ended_at")) + " ago", l["ended"], l["status"], origin(l)] for l in d.get("ended", [])])
-print("* = this key. A proxy restart releases its locks as proxy_restart; expired = no adb activity or heartbeat until the idle timeout.")
+print("* = this key. A proxy restart releases its locks as proxy_restart; expired = no adb activity or heartbeat until the idle timeout; owner_limit = over the time limit set by the phone owner; owner_ended = ended by the phone owner.")
 ' <<<"$BODY"

@@ -56,6 +56,42 @@ type ScopedPort struct {
 	remoteMu       sync.Mutex
 	remoteBySerial map[string]int
 	remoteByID     map[int]string
+	// relayed marks the stand-in for a lock this proxy only relayed phones for.
+	relayed bool
+	// conns are the accepted connections still open, closed along with the
+	// port. Once connsClosed is set, a late accept is closed on arrival.
+	connMu      sync.Mutex
+	conns       map[net.Conn]struct{}
+	connsClosed bool
+}
+
+// trackConn records an accepted connection, or closes it and returns false
+// when the port has closed since it was accepted.
+func (sp *ScopedPort) trackConn(conn net.Conn) bool {
+	sp.connMu.Lock()
+	defer sp.connMu.Unlock()
+	if sp.connsClosed {
+		conn.Close()
+		return false
+	}
+	sp.conns[conn] = struct{}{}
+	return true
+}
+
+func (sp *ScopedPort) untrackConn(conn net.Conn) {
+	sp.connMu.Lock()
+	defer sp.connMu.Unlock()
+	delete(sp.conns, conn)
+}
+
+// closeConns ends every connection on the port, and any accepted from now on.
+func (sp *ScopedPort) closeConns() {
+	sp.connMu.Lock()
+	defer sp.connMu.Unlock()
+	sp.connsClosed = true
+	for conn := range sp.conns {
+		conn.Close()
+	}
 }
 
 // remoteTransportID returns a transport id for a remote serial, stable for the
@@ -107,7 +143,7 @@ type ScopedPortManager struct {
 	// addReverse is commandRouter.AddReverseForward; tests swap it.
 	addReverse func(serial string, port int) error
 	// resetPackages is commandRouter.ResetPackages; tests swap it.
-	resetPackages func(serial string) (removed, suggestions []string, err error)
+	resetPackages func(serial string, since *dspb.PackageSnapshot) (removed, suggestions []string, err error)
 	// clearUiAutomation is commandRouter.ClearUiAutomation; tests swap it.
 	clearUiAutomation func(serial string) (string, error)
 	// wake is commandRouter.Wake; tests swap it.
@@ -230,7 +266,7 @@ func (m *ScopedPortManager) Acquire(ctx context.Context, requestedSerials map[st
 		}
 		mu := m.wifiLock(serial)
 		mu.Lock()
-		m.cleanDevice(sp, serial, " (left by an earlier job)")
+		m.cleanDevice(sp, serial, " (left by an earlier job)", nil)
 		if _, fresh := m.btFresh.LoadAndDelete(serial); !fresh {
 			m.cycleBluetooth(sp, serial, " (no release reset since the last job)", true)
 		}
@@ -542,6 +578,20 @@ func (m *ScopedPortManager) resetDevice(sp *ScopedPort, serial string) {
 	mu := m.wifiLock(serial)
 	mu.Lock()
 	defer mu.Unlock()
+	// This reset settles any relay record naming this lock, so a phone local to
+	// the holder's proxy is not reset again when the lock expires. For a relayed
+	// phone, a record naming another lock means a later relay: it is the next
+	// job's now.
+	rec := m.commandRouter.takeRelayRecord(serial, lockID)
+	if sp.relayed && rec == nil {
+		return
+	}
+	// A local lock resets to the baseline, even if it was also relayed. Waited
+	// for before the check below: the phone can be locked anew meanwhile.
+	var since *dspb.PackageSnapshot
+	if sp.relayed {
+		since = rec.settledSnapshot()
+	}
 	// Checked under the lock: an expired lock's reset can queue behind the
 	// next lock's ON on this phone, and must not then undo it.
 	if m.heldByAnyPort(serial) {
@@ -550,7 +600,7 @@ func (m *ScopedPortManager) resetDevice(sp *ScopedPort, serial string) {
 	// Packages before Wi-Fi: a suggestion a removed app registered for the
 	// bench network goes with the app, so the reset's offline wait is not
 	// spent on a phone that keeps re-joining (sair#76).
-	failed := m.cleanDevice(sp, serial, "")
+	failed := m.cleanDevice(sp, serial, "", since)
 	// Reboot before the Wi-Fi reset: a fresh boot has nothing to forget, so
 	// the offline wait is not spent twice (sair#93). The serial lock is held
 	// throughout, so the next acquire of this phone waits for the boot.
@@ -652,24 +702,20 @@ func (m *ScopedPortManager) waitForSource(serial string) {
 // in sp's lock log with note appended. The caller holds the serial's lock.
 // Runs on release and again on acquire, so a job that never released is
 // cleaned up by the next one. Returns whether a reset step failed.
-func (m *ScopedPortManager) cleanDevice(sp *ScopedPort, serial, note string) (failed bool) {
+//
+// A relayed phone keeps since, what it had before the lock. With no since its
+// packages are left alone: failing to clean is recoverable, deleting its
+// owner's apps is not. That is reported as a failed step, whose only effect in
+// resetDevice is the log excerpt: only a failed Wi-Fi reset can reboot a phone.
+func (m *ScopedPortManager) cleanDevice(sp *ScopedPort, serial, note string, since *dspb.PackageSnapshot) (failed bool) {
 	if err := m.removeReverse(serial); err != nil && status.Code(err) != codes.NotFound {
 		slog.Warn("removing reverse forwards failed", "serial", serial, "lockId", sp.LockID, "error", err)
 	}
-	removed, suggestions, err := m.resetPackages(serial)
-	event := &pb.BenchEvent{Kind: pb.BenchEventKind_BENCH_EVENT_KIND_PACKAGE_RESET, Serial: serial, LockId: sp.LockID, Outcome: "ok"}
-	switch c := status.Code(err); {
-	case err == nil && len(removed) > 0:
-		slog.Info("uninstalled packages a job left behind", "serial", serial, "lockId", sp.LockID, "packages", removed, "suggestionsRemoved", suggestions)
-		sp.Log.Record(&pb.LockLogEntry{TimestampMs: time.Now().UnixMilli(), Serial: serial, Service: packagesRemovedService(removed, suggestions) + note})
-		event.Detail = strings.Join(removed, ", ")
-		m.event(event)
-	case err == nil, c == codes.NotFound, c == codes.Unimplemented:
-		// Nothing left behind, a relayed device, or an older device source.
-	default:
-		slog.Warn("package reset failed; a job's APKs may stay on the phone", "serial", serial, "lockId", sp.LockID, "error", err)
-		event.Outcome, event.Detail = "failed", errText(err)
-		m.event(event)
+	if sp.relayed && since == nil {
+		slog.Warn("no package snapshot for this relayed lock; leaving the phone's packages alone", "serial", serial, "lockId", sp.LockID)
+		m.event(&pb.BenchEvent{Kind: pb.BenchEventKind_BENCH_EVENT_KIND_PACKAGE_RESET, Serial: serial, LockId: sp.LockID, Outcome: "failed", Detail: "no package snapshot, nothing uninstalled"})
+		failed = true
+	} else if m.cleanPackages(sp, serial, note, since) {
 		failed = true
 	}
 	// A leaked UiAutomation fails every later instrumentation (sair#128).
@@ -687,6 +733,33 @@ func (m *ScopedPortManager) cleanDevice(sp *ScopedPort, serial, note string) (fa
 	default:
 		slog.Warn("clearing a leaked UiAutomation failed; instrumentation on this phone will fail until it reboots", "serial", serial, "lockId", sp.LockID, "error", err)
 		sp.Log.Record(&pb.LockLogEntry{TimestampMs: time.Now().UnixMilli(), Serial: serial, Service: "sair: leaked UiAutomation registration not cleared: " + errText(err) + note})
+		failed = true
+	}
+	return failed
+}
+
+// cleanPackages is cleanDevice's package step; true if it failed.
+func (m *ScopedPortManager) cleanPackages(sp *ScopedPort, serial, note string, since *dspb.PackageSnapshot) (failed bool) {
+	removed, suggestions, err := m.resetPackages(serial, since)
+	event := &pb.BenchEvent{Kind: pb.BenchEventKind_BENCH_EVENT_KIND_PACKAGE_RESET, Serial: serial, LockId: sp.LockID, Outcome: "ok"}
+	switch c := status.Code(err); {
+	case err == nil && len(removed) > 0:
+		slog.Info("uninstalled packages a job left behind", "serial", serial, "lockId", sp.LockID, "packages", removed, "suggestionsRemoved", suggestions)
+		sp.Log.Record(&pb.LockLogEntry{TimestampMs: time.Now().UnixMilli(), Serial: serial, Service: packagesRemovedService(removed, suggestions) + note})
+		event.Detail = strings.Join(removed, ", ")
+		m.event(event)
+	case c == codes.NotFound && since != nil:
+		// A relayed lock has no next acquire here to clean up after it.
+		slog.Warn("phone gone at its relayed lock's reset; a job's APKs may stay on it", "serial", serial, "lockId", sp.LockID, "error", err)
+		event.Outcome, event.Detail = "failed", errText(err)
+		m.event(event)
+		failed = true
+	case err == nil, c == codes.NotFound, c == codes.Unimplemented:
+		// Nothing left behind, a phone with no source here, or an older device source.
+	default:
+		slog.Warn("package reset failed; a job's APKs may stay on the phone", "serial", serial, "lockId", sp.LockID, "error", err)
+		event.Outcome, event.Detail = "failed", errText(err)
+		m.event(event)
 		failed = true
 	}
 	return failed
@@ -796,6 +869,7 @@ func (m *ScopedPortManager) CreateScopedPort(lockID string, serials map[string]s
 		keepaliveDone: make(chan struct{}),
 		Log:           &LockLog{},
 		RemoteDevices: remoteDevices,
+		conns:         make(map[net.Conn]struct{}),
 	}
 	sp.lastClient.Store(sp.CreatedAt.UnixNano())
 
@@ -844,6 +918,7 @@ func (m *ScopedPortManager) CloseScopedPort(lockID string) bool {
 	close(sp.heartbeatStop)
 	close(sp.stopCh)
 	sp.listener.Close()
+	sp.closeConns()    // nothing may still be driving a phone during its reset
 	<-sp.keepaliveDone // wait for runKeepalive to stop touching sp.Log before a caller drains it
 
 	slog.Info("closed scoped port", "port", sp.Port, "lockId", lockID)
@@ -854,11 +929,28 @@ func (m *ScopedPortManager) CloseScopedPort(lockID string) bool {
 }
 
 // OnLockExpired is the session's callback: the orchestrator released the lock,
-// so the scoped port is dead. Idempotent.
+// so the scoped port is dead and any phone relayed under it is reset (see
+// resetDevice). Idempotent.
 func (m *ScopedPortManager) OnLockExpired(lockID string) {
 	if m.CloseScopedPort(lockID) {
 		slog.Warn("lock expired on orchestrator; closed scoped port", "lockId", lockID)
 	}
+	m.resetRelayed(lockID)
+}
+
+// resetRelayed resets the phones relayed from here under an ended lock. Its
+// holder's job log is on another proxy, so the stand-in port has no log and
+// the lock log lines of the reset go nowhere; the events still report the lock.
+func (m *ScopedPortManager) resetRelayed(lockID string) {
+	sp := &ScopedPort{LockID: lockID, relayed: true}
+	var wg sync.WaitGroup
+	m.commandRouter.relayLocks.Range(func(serial, id any) bool {
+		if id.(*relayRecord).lockID == lockID {
+			wg.Go(func() { m.resetDevice(sp, serial.(string)) })
+		}
+		return true
+	})
+	wg.Wait()
 }
 
 // GetAllScopedPorts returns a snapshot of all active scoped ports.
@@ -906,6 +998,9 @@ func (m *ScopedPortManager) runAcceptLoop(sp *ScopedPort) {
 			}
 			return
 		}
+		if !sp.trackConn(conn) {
+			continue
+		}
 		// Disable Nagle's algorithm so ADB protocol messages are sent immediately
 		if tc, ok := conn.(*net.TCPConn); ok {
 			if err := tc.SetNoDelay(true); err != nil {
@@ -921,6 +1016,7 @@ func (m *ScopedPortManager) runAcceptLoop(sp *ScopedPort) {
 			defer func() {
 				sp.lastClient.Store(time.Now().UnixNano())
 				sp.openConns.Add(-1)
+				sp.untrackConn(conn)
 			}()
 			adbConn.Handle()
 		}()

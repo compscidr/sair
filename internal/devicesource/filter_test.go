@@ -54,6 +54,9 @@ func TestFilteredSerialIsRefusedByRPCs(t *testing.T) {
 	if _, err := s.ResetPackages(context.Background(), &pb.ResetPackagesRequest{Serial: "DEV1"}); status.Code(err) != codes.NotFound {
 		t.Errorf("ResetPackages: err = %v, want NotFound", err)
 	}
+	if _, err := s.ListPackages(context.Background(), &pb.ListPackagesRequest{Serial: "DEV1"}); status.Code(err) != codes.NotFound {
+		t.Errorf("ListPackages: err = %v, want NotFound", err)
+	}
 	if len(*cmds) != 0 {
 		t.Errorf("a filtered phone was touched: %q", *cmds)
 	}
