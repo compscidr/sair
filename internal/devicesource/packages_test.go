@@ -148,15 +148,59 @@ func TestListPackagesRefusesAnythingButAListing(t *testing.T) {
 	if _, err := s.ListPackages(context.Background(), &pb.ListPackagesRequest{Serial: "ABC"}); status.Code(err) != codes.Internal {
 		t.Errorf("err = %v, want Internal", err)
 	}
-	fakeShell(s, nil) // no third-party packages at all is a fine answer
-	resp, err := s.ListPackages(context.Background(), &pb.ListPackagesRequest{Serial: "ABC"})
-	if err != nil || len(resp.Packages) != 0 {
-		t.Errorf("empty listing: packages = %v, err = %v", resp.GetPackages(), err)
-	}
 	fakeShell(s, nil, "pm list packages")
 	if _, err := s.ListPackages(context.Background(), &pb.ListPackagesRequest{Serial: "ABC"}); status.Code(err) != codes.Internal {
 		t.Errorf("shell failure: err = %v, want Internal", err)
 	}
+}
+
+// A blank third-party listing counts only if pm can name a system package:
+// mid-boot both are blank, and an empty snapshot would remove every app.
+func TestListPackagesConfirmsABlankListing(t *testing.T) {
+	const third, system = "pm list packages -3", "pm list packages -s"
+	req := &pb.ListPackagesRequest{Serial: "ABC"}
+	t.Run("both blank", func(t *testing.T) {
+		s := &Server{}
+		cmds := fakeShell(s, nil)
+		if _, err := s.ListPackages(context.Background(), req); status.Code(err) != codes.Internal {
+			t.Errorf("err = %v, want Internal", err)
+		}
+		if want := []string{third, system}; !reflect.DeepEqual(*cmds, want) {
+			t.Errorf("commands = %q, want %q", *cmds, want)
+		}
+	})
+	t.Run("system listing is not a listing", func(t *testing.T) {
+		s := &Server{}
+		fakeShell(s, map[string]string{system: "Error: Could not access the Package Manager.\n"})
+		if _, err := s.ListPackages(context.Background(), req); status.Code(err) != codes.Internal {
+			t.Errorf("err = %v, want Internal", err)
+		}
+	})
+	t.Run("system listing fails", func(t *testing.T) {
+		s := &Server{}
+		fakeShell(s, nil, system)
+		if _, err := s.ListPackages(context.Background(), req); status.Code(err) != codes.Internal {
+			t.Errorf("err = %v, want Internal", err)
+		}
+	})
+	t.Run("no third-party apps", func(t *testing.T) {
+		s := &Server{}
+		fakeShell(s, map[string]string{system: "package:android\n"})
+		resp, err := s.ListPackages(context.Background(), req)
+		if err != nil || len(resp.GetPackages()) != 0 {
+			t.Errorf("packages = %v, err = %v; want an empty list", resp.GetPackages(), err)
+		}
+	})
+	t.Run("third-party apps need no confirming", func(t *testing.T) {
+		s := &Server{}
+		cmds := fakeShell(s, map[string]string{third: "package:com.a\n"})
+		if _, err := s.ListPackages(context.Background(), req); err != nil {
+			t.Fatal(err)
+		}
+		if want := []string{third}; !reflect.DeepEqual(*cmds, want) {
+			t.Errorf("commands = %q, want %q", *cmds, want)
+		}
+	})
 }
 
 // BASELINE_PACKAGES replaces the recorded set for every phone; nothing is

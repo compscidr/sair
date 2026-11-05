@@ -113,8 +113,9 @@ func (s *Server) baselineFor(serial string) map[string]struct{} {
 }
 
 // ListPackages is the phone's third-party packages, for a later ResetPackages
-// to keep. Anything but a clean listing is an error: taken for an empty one, it
-// would have that reset uninstall every app the phone's owner has.
+// to keep. Anything but a clean listing is an error, as is a blank one pm can't
+// back up: taken for an empty one, it would have that reset uninstall every app
+// the phone's owner has.
 func (s *Server) ListPackages(ctx context.Context, req *pb.ListPackagesRequest) (*pb.ListPackagesResponse, error) {
 	if err := s.checkSerial(req.Serial); err != nil {
 		return nil, err
@@ -128,7 +129,19 @@ func (s *Server) ListPackages(ctx context.Context, req *pb.ListPackagesRequest) 
 			return nil, status.Errorf(codes.Internal, "%s: list packages: %s", req.Serial, line)
 		}
 	}
-	return &pb.ListPackagesResponse{Packages: slices.Sorted(maps.Keys(parsePackages(out)))}, nil
+	pkgs := parsePackages(out)
+	if len(pkgs) == 0 {
+		// Blank with exit 0 is also what a booting phone says: believe it only
+		// if pm can name a system package.
+		sys, err := s.shell(ctx, req.Serial, "pm list packages -s")
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "%s: list system packages: %v", req.Serial, err)
+		}
+		if len(parsePackages(sys)) == 0 {
+			return nil, status.Errorf(codes.Internal, "%s: package manager listed nothing, not even system packages", req.Serial)
+		}
+	}
+	return &pb.ListPackagesResponse{Packages: slices.Sorted(maps.Keys(pkgs))}, nil
 }
 
 // ResetPackages uninstalls every third-party package not in the baseline, or
