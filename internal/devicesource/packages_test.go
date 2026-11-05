@@ -95,6 +95,7 @@ func TestResetPackagesSince(t *testing.T) {
 	const listed = "package:com.bench.keep\npackage:com.owner.hand\npackage:com.job.app\n"
 	uninstalls := map[string]string{
 		"pm list packages -3":                    listed,
+		listThirdParty:                           listed + "sair-listing-end\n",
 		"pm uninstall 'com.bench.keep'":          "Success",
 		"pm uninstall 'com.owner.hand'":          "Success",
 		"pm uninstall 'com.job.app'":             "Success",
@@ -139,6 +140,39 @@ func TestResetPackagesSince(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A listing cut off inside a name can parse as a real system package, which -3
+// never lists, so no snapshot has it, and `pm uninstall --user 0` removes system
+// apps too. So with since, a cut listing uninstalls nothing.
+func TestResetPackagesSinceRefusesACutListing(t *testing.T) {
+	for _, out := range []string{
+		"package:com.owner.hand\npackage:com.google.android.apps.docs",
+		"package:com.owner.hand\npackage:com.job.app\n",
+		"package:com.owner.hand\nError: Binder died\nsair-listing-end\n",
+	} {
+		s := &Server{stopPackages: []string{"com.android.chrome"}}
+		cmds := fakeShell(s, map[string]string{listThirdParty: out, "pm list packages -3": out})
+		_, err := s.ResetPackages(context.Background(), &pb.ResetPackagesRequest{Serial: "ABC", Since: &pb.PackageSnapshot{Packages: []string{"com.owner.hand"}}})
+		if status.Code(err) != codes.Internal {
+			t.Errorf("%q: err = %v, want Internal", out, err)
+		}
+		if i := slices.IndexFunc(*cmds, func(c string) bool { return strings.HasPrefix(c, "pm uninstall") }); i >= 0 {
+			t.Errorf("%q: ran %q", out, (*cmds)[i])
+		}
+	}
+}
+
+// The baseline path keeps its plain listing: local locks are unaffected.
+func TestResetPackagesBaselineListsPlainly(t *testing.T) {
+	s := &Server{baselineOverride: packageSet([]string{"com.bench.keep"})}
+	cmds := fakeShell(s, map[string]string{"pm list packages -3": "package:com.bench.keep\n"})
+	if _, err := s.ResetPackages(context.Background(), &pb.ResetPackagesRequest{Serial: "ABC"}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(*cmds, "pm list packages -3") {
+		t.Errorf("commands = %q", *cmds)
 	}
 }
 

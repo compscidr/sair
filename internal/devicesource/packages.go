@@ -177,7 +177,8 @@ func (s *Server) completeListing(ctx context.Context, serial, flag string) (map[
 // left behind. A package that refuses to go is logged and skipped: one stubborn
 // APK must not keep the rest on the phone.
 //
-// Its own listing needs no listingEnd: a short one only uninstalls less.
+// With req.Since the listing must be complete: a name cut short can parse as a
+// system package, which no snapshot has and --user 0 would remove.
 func (s *Server) ResetPackages(ctx context.Context, req *pb.ResetPackagesRequest) (*pb.ResetPackagesResponse, error) {
 	if err := s.checkSerial(req.Serial); err != nil {
 		return nil, err
@@ -194,12 +195,21 @@ func (s *Server) ResetPackages(ctx context.Context, req *pb.ResetPackagesRequest
 	// owned can be named: Android drops a package's suggestions with it.
 	before, _ := s.shell(ctx, req.Serial, "cmd wifi list-all-suggestions")
 
-	out, err := s.shell(ctx, req.Serial, "pm list packages -3")
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "%s: list packages: %v", req.Serial, err)
+	var listed map[string]struct{}
+	if req.Since != nil {
+		var err error
+		if listed, err = s.completeListing(ctx, req.Serial, "-3"); err != nil {
+			return nil, err
+		}
+	} else {
+		out, err := s.shell(ctx, req.Serial, "pm list packages -3")
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "%s: list packages: %v", req.Serial, err)
+		}
+		listed = parsePackages(out)
 	}
 	resp := &pb.ResetPackagesResponse{}
-	for _, pkg := range slices.Sorted(maps.Keys(parsePackages(out))) {
+	for _, pkg := range slices.Sorted(maps.Keys(listed)) {
 		if _, ok := keep[pkg]; ok {
 			continue
 		}
