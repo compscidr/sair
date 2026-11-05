@@ -420,7 +420,7 @@ modification.
 
 | Variable | Default | Description |
 |---|---|---|
-| `DEVICE_SOURCE_PORT` | `8080` | gRPC listen port |
+| `DEVICE_SOURCE_PORT` | `8552` | gRPC listen port |
 | `ADB_PORT` | `5038` | Port of the real ADB server |
 | `DEVICE_SERIALS` | — | Only these serials (comma-separated) are managed; the rest of the bench's phones are invisible to sair. Set but empty: none |
 | `EXCLUDE_SERIALS` | — | Every attached phone except these is managed. Mutually exclusive with `DEVICE_SERIALS` |
@@ -448,7 +448,7 @@ names one that is not attached.
 Verify it's working:
 
 ```bash
-grpcurl -plaintext localhost:8080 devicesource.DeviceSource/GetDevices
+grpcurl -plaintext localhost:8552 devicesource.DeviceSource/GetDevices
 ```
 
 ### Proxy

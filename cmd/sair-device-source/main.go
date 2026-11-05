@@ -29,7 +29,7 @@ The SAIR device source. Takes no arguments; it is configured through env vars:
 
   SAIR_API_KEY                  API key sent with device reports (default: dev-key-123)
   PROXY_ADDR                    Proxy HTTP API to report devices to (default: http://localhost:8550)
-  DEVICE_SOURCE_PORT            gRPC port (default: 8080)
+  DEVICE_SOURCE_PORT            gRPC port (default: 8552)
   DEVICE_SOURCE_ADDR            Address the proxy dials back (default: localhost:<DEVICE_SOURCE_PORT>)
   ADB_PORT                      Real ADB server port (default: 5038)
   DEVICE_SERIALS                Only manage these serials, comma-separated (default: every attached phone)
@@ -57,7 +57,7 @@ func main() {
 
 	slog.Info("DeviceSource starting...", "version", version.Version)
 
-	port := 8080
+	port := 8552
 	if v := os.Getenv("DEVICE_SOURCE_PORT"); v != "" {
 		if p, err := strconv.Atoi(v); err == nil {
 			port = p
