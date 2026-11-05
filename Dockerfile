@@ -17,7 +17,7 @@ RUN apk add --no-cache android-tools
 COPY --from=builder /bin/sair-device-source /usr/local/bin/sair-device-source
 RUN adduser -D -u 1000 sair
 USER sair
-EXPOSE 8080
+EXPOSE 8552
 ENTRYPOINT ["sair-device-source"]
 
 # Proxy image
