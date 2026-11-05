@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"slices"
 	"strings"
@@ -209,6 +210,60 @@ type fakeDeviceSource struct {
 	// ever waiting for the client to half-close first (e.g. `adb shell <cmd>`
 	// or connectedCheck, where the command's own output is the end).
 	endsFirst bool
+	// installed, when non-nil, is the phone's third-party packages: ListPackages
+	// lists them and ResetPackages applies since to them. Nil is an older device
+	// source, Unimplemented for both.
+	installed map[string]struct{}
+	// listErr fails ListPackages; listGate, when set, blocks it until closed.
+	listErr   error
+	listGate  chan struct{}
+	listCalls int
+	sinces    []*dspb.PackageSnapshot // one per ResetPackages
+}
+
+func (d *fakeDeviceSource) ListPackages(ctx context.Context, req *dspb.ListPackagesRequest) (*dspb.ListPackagesResponse, error) {
+	d.mu.Lock()
+	d.listCalls++
+	gate := d.listGate
+	d.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.listErr != nil {
+		return nil, d.listErr
+	}
+	if d.installed == nil {
+		return d.UnimplementedDeviceSourceServer.ListPackages(ctx, req)
+	}
+	return &dspb.ListPackagesResponse{Packages: slices.Sorted(maps.Keys(d.installed))}, nil
+}
+
+func (d *fakeDeviceSource) ResetPackages(_ context.Context, req *dspb.ResetPackagesRequest) (*dspb.ResetPackagesResponse, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.sinces = append(d.sinces, req.Since)
+	resp := &dspb.ResetPackagesResponse{}
+	for _, pkg := range slices.Sorted(maps.Keys(d.installed)) {
+		if !slices.Contains(req.GetSince().GetPackages(), pkg) {
+			delete(d.installed, pkg)
+			resp.Removed = append(resp.Removed, pkg)
+		}
+	}
+	return resp, nil
+}
+
+func (d *fakeDeviceSource) install(pkg string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.installed[pkg] = struct{}{}
+}
+
+func (d *fakeDeviceSource) stats() (setups, lists int, sinces []*dspb.PackageSnapshot) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.setups), d.listCalls, slices.Clone(d.sinces)
 }
 
 func (d *fakeDeviceSource) ForwardToDevice(stream grpc.BidiStreamingServer[dspb.ForwardData, dspb.ForwardData]) error {
@@ -646,6 +701,7 @@ func TestServeRelayWaitsForReleaseReset(t *testing.T) {
 // pushes LockExpired.
 type relayResetHarness struct {
 	m      *ScopedPortManager
+	f      *fakeRelayOrchestrator
 	r      *CommandRouter
 	ds     *fakeDeviceSource
 	mu     sync.Mutex
@@ -655,8 +711,8 @@ type relayResetHarness struct {
 
 func newRelayResetHarness(t *testing.T) *relayResetHarness {
 	t.Helper()
-	h := &relayResetHarness{ds: &fakeDeviceSource{failAfterSetup: status.New(codes.Unavailable, "device gone")}}
-	h.r = relayRouter(t, newFakeRelayOrchestrator(), h.ds, map[string]string{"LOCAL1": "passthrough:///bufconn-ds", "LOCAL2": "passthrough:///bufconn-ds"})
+	h := &relayResetHarness{f: newFakeRelayOrchestrator(), ds: &fakeDeviceSource{failAfterSetup: status.New(codes.Unavailable, "device gone")}}
+	h.r = relayRouter(t, h.f, h.ds, map[string]string{"LOCAL1": "passthrough:///bufconn-ds", "LOCAL2": "passthrough:///bufconn-ds"})
 	h.m = NewScopedPortManager(h.r, nil, 3600)
 	record := func(call string) {
 		h.mu.Lock()
@@ -668,7 +724,9 @@ func newRelayResetHarness(t *testing.T) *relayResetHarness {
 		record(serial + " " + state.String())
 		return nil
 	}
-	h.m.resetPackages = func(string) ([]string, []string, error) { return []string{"com.example.app"}, nil, nil }
+	h.m.resetPackages = func(string, *dspb.PackageSnapshot) ([]string, []string, error) {
+		return []string{"com.example.app"}, nil, nil
+	}
 	h.m.event = func(e *pb.BenchEvent) {
 		h.mu.Lock()
 		defer h.mu.Unlock()
@@ -760,8 +818,8 @@ func TestLockExpiredQueuedBehindNewRelaySkipsReset(t *testing.T) {
 	go func() { h.m.OnLockExpired("l1"); close(expired) }()
 	go h.relay("LOCAL1", "l2")
 	waitFor(t, "l2 registered while waiting on the serial lock", func() bool {
-		lockID, _ := h.r.relayLocks.Load("LOCAL1")
-		return lockID == "l2"
+		rec, _ := h.r.relayLocks.Load("LOCAL1")
+		return rec.(*relayRecord).lockID == "l2"
 	})
 	mu.Unlock()
 	<-expired
@@ -812,6 +870,218 @@ func TestLockExpiredWithPortAndRelayResetsOnce(t *testing.T) {
 	want := []string{"LOCAL1 ON", "LOCAL1 RESET", "LOCAL1 unreverse"}
 	if got := h.sortedCalls(); !slices.Equal(got, want) {
 		t.Errorf("calls = %q, want %q", got, want)
+	}
+}
+
+// snapshotHarness is a relayResetHarness whose resets reach the fake device
+// source for real, on a phone with installed on it.
+func snapshotHarness(t *testing.T, installed ...string) *relayResetHarness {
+	t.Helper()
+	h := newRelayResetHarness(t)
+	h.ds.installed = make(map[string]struct{})
+	for _, pkg := range installed {
+		h.ds.installed[pkg] = struct{}{}
+	}
+	h.m.resetPackages = h.r.ResetPackages
+	return h
+}
+
+func (h *relayResetHarness) installed() []string {
+	h.ds.mu.Lock()
+	defer h.ds.mu.Unlock()
+	return slices.Sorted(maps.Keys(h.ds.installed))
+}
+
+// The reason for the snapshot: an app the phone's owner installed by hand
+// outlives a borrower's lock, and an app that appeared during it does not.
+func TestRelayedResetRemovesOnlyWhatAppearedDuringTheLock(t *testing.T) {
+	h := snapshotHarness(t, "com.owner.hand")
+	h.relay("LOCAL1", "l1")
+	h.ds.install("com.guest.app")
+	h.relay("LOCAL1", "l1") // the snapshot stays the first relay's
+	h.m.OnLockExpired("l1")
+	if got := h.installed(); !slices.Equal(got, []string{"com.owner.hand"}) {
+		t.Errorf("installed = %q", got)
+	}
+	if _, lists, sinces := h.ds.stats(); lists != 1 || len(sinces) != 1 || sinces[0] == nil {
+		t.Errorf("lists = %d, sinces = %v; want one of each", lists, sinces)
+	}
+}
+
+// A phone that really has no third-party apps gives an empty snapshot, which
+// is not the same as none: the guest's app still goes.
+func TestRelayedResetWithEmptySnapshotStillResets(t *testing.T) {
+	h := snapshotHarness(t)
+	h.relay("LOCAL1", "l1")
+	h.ds.install("com.guest.app")
+	h.m.OnLockExpired("l1")
+	if got := h.installed(); len(got) != 0 {
+		t.Errorf("installed = %q", got)
+	}
+}
+
+// With no snapshot nothing says which apps are the owner's, so none go; the
+// rest of the reset runs, a warning names the phone and lock, and the relay
+// serves the job regardless.
+func TestRelayedResetWithoutSnapshotLeavesPackages(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		err  error
+	}{
+		{"fails", status.Error(codes.Internal, "pm failed")},
+		{"older device source", nil}, // installed is nil: Unimplemented
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newRelayResetHarness(t)
+			h.ds.listErr = tt.err
+			logs := &logBuffer{}
+			defer captureSlog(logs)()
+			resets := 0
+			h.m.resetPackages = func(string, *dspb.PackageSnapshot) ([]string, []string, error) {
+				resets++
+				return nil, nil, nil
+			}
+			h.m.clearUiAutomation = func(serial string) (string, error) {
+				h.mu.Lock()
+				defer h.mu.Unlock()
+				h.calls = append(h.calls, serial+" uiautomation")
+				return "", nil
+			}
+			h.relay("LOCAL1", "l1")
+			if setups, _, _ := h.ds.stats(); setups != 1 {
+				t.Errorf("device opened %d times, want 1: the relay must survive a failed snapshot", setups)
+			}
+			h.m.OnLockExpired("l1")
+			if resets != 0 {
+				t.Errorf("resetPackages ran %d times without a snapshot", resets)
+			}
+			want := []string{"LOCAL1 ON", "LOCAL1 RESET", "LOCAL1 uiautomation", "LOCAL1 unreverse"}
+			if got := h.sortedCalls(); !slices.Equal(got, want) {
+				t.Errorf("calls = %q, want %q", got, want)
+			}
+			if !logs.contains(`level=WARN msg="no package snapshot for this relayed lock; leaving the phone's packages alone" serial=LOCAL1 lockId=l1`) {
+				t.Errorf("no warning naming the phone and lock: %q", logs.String())
+			}
+		})
+	}
+}
+
+// A lock can end with a relay still short of its snapshot (waiting out a
+// reset, say). The reset then settles the record, so that relay can't take a
+// snapshot of the phone after the reset and have it trusted.
+func TestLockExpiredBeforeAnySnapshotSettlesTheRecord(t *testing.T) {
+	h := snapshotHarness(t, "com.owner.hand")
+	rec := h.r.relayRecordFor("LOCAL1", "l1")
+	h.m.OnLockExpired("l1")
+	if _, _, sinces := h.ds.stats(); len(sinces) != 0 {
+		t.Errorf("reset packages with no snapshot: %v", sinces)
+	}
+	if got := h.sortedCalls(); len(got) != 3 {
+		t.Errorf("rest of the reset did not run: calls = %q", got)
+	}
+	client, err := h.r.getOrCreateDSClient("passthrough:///bufconn-ds")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.takeSnapshot(client, "LOCAL1")
+	if _, lists, _ := h.ds.stats(); lists != 0 || rec.settledSnapshot() != nil {
+		t.Errorf("a settled record took a snapshot: lists = %d", lists)
+	}
+}
+
+// Concurrent relays under one lock share one snapshot, and neither reaches
+// the device before it is done: the first command could install something.
+func TestConcurrentRelaysShareOneSnapshot(t *testing.T) {
+	h := snapshotHarness(t, "com.owner.hand")
+	gate := make(chan struct{})
+	h.ds.listGate = gate
+	var wg sync.WaitGroup
+	wg.Go(func() { h.r.ServeRelay(&pb.RelayOpen{TunnelId: "t1", Serial: "LOCAL1", LockId: "l1"}) })
+	wg.Go(func() { h.r.ServeRelay(&pb.RelayOpen{TunnelId: "t2", Serial: "LOCAL1", LockId: "l1"}) })
+	waitFor(t, "snapshot started", func() bool { _, lists, _ := h.ds.stats(); return lists == 1 })
+	time.Sleep(100 * time.Millisecond) // the other relay arrives at the snapshot
+	if setups, lists, _ := h.ds.stats(); setups != 0 || lists != 1 {
+		close(gate)
+		t.Fatalf("during the snapshot: device opened %d times, %d snapshots", setups, lists)
+	}
+	close(gate)
+	wg.Wait()
+	if setups, lists, _ := h.ds.stats(); setups != 2 || lists != 1 {
+		t.Errorf("after: device opened %d times, %d snapshots; want 2 and 1", setups, lists)
+	}
+}
+
+// A reset arriving during the snapshot waits for it and uses it.
+func TestLockExpiredWaitsForSnapshotInProgress(t *testing.T) {
+	h := snapshotHarness(t, "com.owner.hand")
+	gate := make(chan struct{})
+	h.ds.listGate = gate
+	var wg sync.WaitGroup
+	wg.Go(func() { h.relay("LOCAL1", "l1") })
+	waitFor(t, "snapshot started", func() bool { _, lists, _ := h.ds.stats(); return lists == 1 })
+	h.ds.install("com.guest.app")
+	expired := make(chan struct{})
+	wg.Go(func() { h.m.OnLockExpired("l1"); close(expired) })
+	select {
+	case <-expired:
+		t.Error("reset did not wait for the snapshot")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(gate)
+	wg.Wait()
+	if _, _, sinces := h.ds.stats(); len(sinces) != 1 || sinces[0] == nil {
+		t.Errorf("sinces = %v, want the snapshot", sinces)
+	}
+}
+
+// A tunnel that died during the snapshot is not served, as after a reset.
+func TestServeRelayTunnelFailedDuringSnapshotNeverOpensDevice(t *testing.T) {
+	h := snapshotHarness(t)
+	gate := make(chan struct{})
+	h.ds.listGate = gate
+	var wg sync.WaitGroup
+	wg.Go(func() { h.r.ServeRelay(&pb.RelayOpen{TunnelId: "t1", Serial: "LOCAL1", LockId: "l1"}) })
+	waitFor(t, "snapshot started", func() bool { _, lists, _ := h.ds.stats(); return lists == 1 })
+	h.f.mu.Lock()
+	done := h.f.done["t1"]
+	h.f.mu.Unlock()
+	done <- status.Error(codes.Aborted, "lock l1 released")
+	time.Sleep(200 * time.Millisecond) // the failure reaches the proxy
+	close(gate)
+	wg.Wait()
+	if setups, _, _ := h.ds.stats(); setups != 0 {
+		t.Errorf("failed tunnel reached the device %d times", setups)
+	}
+}
+
+// Each lock has its own snapshot, and the old lock's end touches nothing.
+func TestRelayUnderSecondLockTakesItsOwnSnapshot(t *testing.T) {
+	h := snapshotHarness(t, "com.owner.hand")
+	h.relay("LOCAL1", "l1")
+	h.ds.install("com.other.owner.hand")
+	h.relay("LOCAL1", "l2")
+	h.ds.install("com.guest.app")
+	h.m.OnLockExpired("l1")
+	if _, lists, sinces := h.ds.stats(); lists != 2 || len(sinces) != 0 {
+		t.Errorf("after l1's end: lists = %d, sinces = %v; want 2 and none", lists, sinces)
+	}
+	h.m.OnLockExpired("l2")
+	if got, want := h.installed(), []string{"com.other.owner.hand", "com.owner.hand"}; !slices.Equal(got, want) {
+		t.Errorf("installed = %q, want %q", got, want)
+	}
+}
+
+// A lock local to this proxy can be relayed too (the stop step); its reset is
+// a local one, against the baseline, whatever the relay's snapshot says.
+func TestLocalPortWithRelayResetsFromTheBaseline(t *testing.T) {
+	h := snapshotHarness(t, "com.owner.hand")
+	if _, err := h.m.CreateScopedPort("l1", map[string]struct{}{"LOCAL1": {}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	h.relay("LOCAL1", "l1")
+	h.m.OnLockExpired("l1")
+	if _, lists, sinces := h.ds.stats(); lists != 1 || len(sinces) != 1 || sinces[0] != nil {
+		t.Errorf("lists = %d, sinces = %v; want one reset with no since", lists, sinces)
 	}
 }
 

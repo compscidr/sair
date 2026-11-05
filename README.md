@@ -196,7 +196,12 @@ you:
   the proxy log and the lock's log on the orchestrator, naming any Wi-Fi
   suggestion that went with a package. This runs before the Wi-Fi reset, so a
   suggestion a test app leaked for the bench network is gone before the reset
-  waits for the phone to be offline.
+  waits for the phone to be offline. A phone relayed to a borrower is different:
+  the first relay under a lock lists its third-party packages, and when the lock
+  ends only what is not on that list is uninstalled, so an app its owner
+  installed by hand stays, whenever it was installed. If that list could not be
+  read (a device source older than the proxy, say), no package is uninstalled
+  and the proxy logs a warning.
 - **On acquire** the same cleanup runs first (reverse forwards, packages),
   before the Wi-Fi check. A job that never released, because it had no
   `if: always()` release step, its runner died, or the proxy was down when

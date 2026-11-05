@@ -3,6 +3,7 @@ package devicesource
 import (
 	"context"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -83,6 +84,78 @@ func TestResetPackagesNeedsABaseline(t *testing.T) {
 	_, err := s.ResetPackages(context.Background(), &pb.ResetPackagesRequest{Serial: "ABC"})
 	if status.Code(err) != codes.FailedPrecondition || len(*cmds) != 0 {
 		t.Fatalf("err = %v, cmds = %q; want FailedPrecondition and no commands", err, *cmds)
+	}
+}
+
+// A relayed lock's snapshot replaces the baseline: what the phone had before
+// the lock stays and anything else goes, even a package in the baseline (a
+// reinstall during the lock). It needs no baseline, and the rest of the reset
+// still runs.
+func TestResetPackagesSince(t *testing.T) {
+	const listed = "package:com.bench.keep\npackage:com.owner.hand\npackage:com.job.app\n"
+	uninstalls := map[string]string{
+		"pm list packages -3":           listed,
+		"pm uninstall 'com.bench.keep'": "Success",
+		"pm uninstall 'com.owner.hand'": "Success",
+		"pm uninstall 'com.job.app'":    "Success",
+	}
+	base := map[string]map[string]struct{}{"ABC": packageSet([]string{"com.bench.keep"})}
+	for _, tt := range []struct {
+		name     string
+		baseline map[string]map[string]struct{}
+		since    *pb.PackageSnapshot
+		want     []string
+	}{
+		{"keeps the snapshot, not the baseline", base, &pb.PackageSnapshot{Packages: []string{"com.owner.hand"}}, []string{"com.bench.keep", "com.job.app"}},
+		{"empty keeps nothing", base, &pb.PackageSnapshot{}, []string{"com.bench.keep", "com.job.app", "com.owner.hand"}},
+		{"absent uses the baseline", base, nil, []string{"com.job.app", "com.owner.hand"}},
+		{"no baseline needed", nil, &pb.PackageSnapshot{Packages: []string{"com.bench.keep", "com.owner.hand"}}, []string{"com.job.app"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &Server{baseline: tt.baseline, stopPackages: []string{"com.android.chrome"}}
+			cmds := fakeShell(s, uninstalls)
+			resp, err := s.ResetPackages(context.Background(), &pb.ResetPackagesRequest{Serial: "ABC", Since: tt.since})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(resp.Removed, tt.want) {
+				t.Errorf("removed = %v, want %v", resp.Removed, tt.want)
+			}
+			if !slices.Contains(*cmds, "am force-stop 'com.android.chrome'") {
+				t.Errorf("rest of the reset did not run: %q", *cmds)
+			}
+		})
+	}
+}
+
+func TestListPackages(t *testing.T) {
+	s := &Server{}
+	fakeShell(s, map[string]string{"pm list packages -3": "package:com.z\npackage:com.a\npackage:com.m\n"})
+	resp, err := s.ListPackages(context.Background(), &pb.ListPackagesRequest{Serial: "ABC"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"com.a", "com.m", "com.z"}; !reflect.DeepEqual(resp.Packages, want) {
+		t.Errorf("packages = %v, want %v", resp.Packages, want)
+	}
+}
+
+// A listing that failed without saying so must not read as "no packages": a
+// reset would keep nothing and take the owner's apps with it.
+func TestListPackagesRefusesAnythingButAListing(t *testing.T) {
+	s := &Server{}
+	fakeShell(s, map[string]string{"pm list packages -3": "Error: Could not access the Package Manager.  Is the system running?\n"})
+	if _, err := s.ListPackages(context.Background(), &pb.ListPackagesRequest{Serial: "ABC"}); status.Code(err) != codes.Internal {
+		t.Errorf("err = %v, want Internal", err)
+	}
+	fakeShell(s, nil) // no third-party packages at all is a fine answer
+	resp, err := s.ListPackages(context.Background(), &pb.ListPackagesRequest{Serial: "ABC"})
+	if err != nil || len(resp.Packages) != 0 {
+		t.Errorf("empty listing: packages = %v, err = %v", resp.GetPackages(), err)
+	}
+	fakeShell(s, nil, "pm list packages")
+	if _, err := s.ListPackages(context.Background(), &pb.ListPackagesRequest{Serial: "ABC"}); status.Code(err) != codes.Internal {
+		t.Errorf("shell failure: err = %v, want Internal", err)
 	}
 }
 

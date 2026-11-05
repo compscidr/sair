@@ -397,7 +397,7 @@ func TestReleaseRebootsStalePhoneThenResetsAndWakes(t *testing.T) {
 	m := NewScopedPortManager(&CommandRouter{orchClient: fake, apiKey: "k"}, nil, 3600)
 	var steps []string
 	m.removeReverse = func(string) error { return nil }
-	m.resetPackages = func(string) ([]string, []string, error) { steps = append(steps, "packages"); return nil, nil, nil }
+	m.resetPackages = func(string, *dspb.PackageSnapshot) ([]string, []string, error) { steps = append(steps, "packages"); return nil, nil, nil }
 	m.clearUiAutomation = func(string) (string, error) {
 		steps = append(steps, "uiautomation")
 		return "killed 2190 app_process", nil
@@ -444,7 +444,7 @@ func TestPlayStoreHeldForTheLease(t *testing.T) {
 	m := NewScopedPortManager(&CommandRouter{orchClient: fake, apiKey: "k"}, nil, 3600)
 	var steps []string
 	m.removeReverse = func(string) error { return nil }
-	m.resetPackages = func(string) ([]string, []string, error) { return nil, nil, nil }
+	m.resetPackages = func(string, *dspb.PackageSnapshot) ([]string, []string, error) { return nil, nil, nil }
 	m.rebootIfStale = func(string) (bool, time.Duration, error) { return false, time.Hour, nil }
 	m.setWifi = func(_ string, st dspb.WifiRequest_State, _ string) error { steps = append(steps, "wifi "+st.String()); return nil }
 	m.wake = func(string) error { steps = append(steps, "wake"); return nil }
@@ -487,7 +487,7 @@ func TestBluetoothCycledOnReleaseAndOnAcquireOnlyWhenNeeded(t *testing.T) {
 	m := NewScopedPortManager(&CommandRouter{orchClient: fake, apiKey: "k"}, nil, 3600)
 	var steps []string
 	m.removeReverse = func(string) error { return nil }
-	m.resetPackages = func(string) ([]string, []string, error) { return nil, nil, nil }
+	m.resetPackages = func(string, *dspb.PackageSnapshot) ([]string, []string, error) { return nil, nil, nil }
 	m.rebootIfStale = func(string) (bool, time.Duration, error) { return false, time.Hour, nil }
 	m.setWifi = func(_ string, st dspb.WifiRequest_State, _ string) error { steps = append(steps, "wifi "+st.String()); return nil }
 	m.wake = func(string) error { steps = append(steps, "wake"); return nil }
@@ -558,7 +558,7 @@ func TestReleaseRebootsAWedgedRadioAndResetsAgain(t *testing.T) {
 		m := NewScopedPortManager(&CommandRouter{orchClient: fake, apiKey: "k"}, nil, 3600)
 		var steps []string
 		m.removeReverse = func(string) error { return nil }
-		m.resetPackages = func(string) ([]string, []string, error) { return nil, nil, nil }
+		m.resetPackages = func(string, *dspb.PackageSnapshot) ([]string, []string, error) { return nil, nil, nil }
 		m.rebootIfStale = func(string) (bool, time.Duration, error) { return false, time.Hour, nil }
 		m.wake = func(string) error { return nil }
 		wedged := true

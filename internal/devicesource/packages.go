@@ -112,16 +112,38 @@ func (s *Server) baselineFor(serial string) map[string]struct{} {
 	return s.baseline[serial]
 }
 
-// ResetPackages uninstalls every third-party package not in the baseline,
-// then force-stops and clears the configured apps. Reports what went so the
-// lock log shows what a job left behind. A package that refuses to go is
+// ListPackages is the phone's third-party packages, for a later ResetPackages
+// to keep. Anything but a clean listing is an error: taken for an empty one, it
+// would have that reset uninstall every app the phone's owner has.
+func (s *Server) ListPackages(ctx context.Context, req *pb.ListPackagesRequest) (*pb.ListPackagesResponse, error) {
+	if err := s.checkSerial(req.Serial); err != nil {
+		return nil, err
+	}
+	out, err := s.shell(ctx, req.Serial, "pm list packages -3")
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%s: list packages: %v", req.Serial, err)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "package:") {
+			return nil, status.Errorf(codes.Internal, "%s: list packages: %s", req.Serial, line)
+		}
+	}
+	return &pb.ListPackagesResponse{Packages: slices.Sorted(maps.Keys(parsePackages(out)))}, nil
+}
+
+// ResetPackages uninstalls every third-party package not in the baseline, or
+// not in req.Since when that is present (what a relayed phone had before its
+// lock; then no baseline is needed), then force-stops and clears the configured
+// apps. Reports what went so the lock log shows what a job left behind. A package that refuses to go is
 // logged and skipped: one stubborn APK must not keep the rest on the phone.
 func (s *Server) ResetPackages(ctx context.Context, req *pb.ResetPackagesRequest) (*pb.ResetPackagesResponse, error) {
 	if err := s.checkSerial(req.Serial); err != nil {
 		return nil, err
 	}
-	base := s.baselineFor(req.Serial)
-	if base == nil {
+	var keep map[string]struct{}
+	if req.Since != nil {
+		keep = packageSet(req.Since.Packages)
+	} else if keep = s.baselineFor(req.Serial); keep == nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "no baseline package set recorded for %s yet", req.Serial)
 	}
 	// Suggestions are read before and after so the ones a removed package
@@ -134,7 +156,7 @@ func (s *Server) ResetPackages(ctx context.Context, req *pb.ResetPackagesRequest
 	}
 	resp := &pb.ResetPackagesResponse{}
 	for _, pkg := range slices.Sorted(maps.Keys(parsePackages(out))) {
-		if _, keep := base[pkg]; keep {
+		if _, ok := keep[pkg]; ok {
 			continue
 		}
 		out, err := s.shell(ctx, req.Serial, "pm uninstall "+shellQuote(pkg))

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"time"
 
 	dspb "github.com/compscidr/sair/proto/devicesource"
@@ -219,10 +220,76 @@ func relayErr(err error) error {
 	return fmt.Errorf("%s", st.Message())
 }
 
+// relayRecord is one lock's relay of one phone. Its snapshot is the phone's
+// third-party packages before that lock's first command, which is all the
+// lock's reset may keep: what the phone's owner installed by hand is in it.
+type relayRecord struct {
+	lockID   string
+	once     sync.Once
+	snapshot *dspb.PackageSnapshot // written inside once; nil means there is none
+}
+
+// takeSnapshot lists the phone's packages unless this record has already had
+// its one chance, and returns once the snapshot is settled either way, so a
+// concurrent relay of the record waits for it. A failure leaves none: the
+// reset then skips the packages, and the job proceeds.
+func (rec *relayRecord) takeSnapshot(client dspb.DeviceSourceClient, serial string) {
+	rec.once.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		resp, err := client.ListPackages(ctx, &dspb.ListPackagesRequest{Serial: serial})
+		if err != nil {
+			slog.Warn("relay: reading the phone's packages failed; this lock's reset will leave its packages alone", "serial", serial, "lockId", rec.lockID, "error", err)
+			return
+		}
+		rec.snapshot = &dspb.PackageSnapshot{Packages: resp.Packages}
+	})
+}
+
+// settledSnapshot waits out a snapshot in progress. If none has started it
+// settles the record as having none, so a relay still holding it can't take
+// one after the reset and have it read as the phone's state before the lock.
+func (rec *relayRecord) settledSnapshot() *dspb.PackageSnapshot {
+	rec.once.Do(func() {})
+	return rec.snapshot
+}
+
+// relayRecordFor returns serial's record for lockID, replacing one for any
+// other lock.
+func (r *CommandRouter) relayRecordFor(serial, lockID string) *relayRecord {
+	fresh := &relayRecord{lockID: lockID}
+	for {
+		v, loaded := r.relayLocks.LoadOrStore(serial, fresh)
+		if !loaded {
+			return fresh
+		}
+		rec := v.(*relayRecord)
+		if rec.lockID == lockID {
+			return rec
+		}
+		if r.relayLocks.CompareAndSwap(serial, rec, fresh) {
+			return fresh
+		}
+	}
+}
+
+// takeRelayRecord removes and returns serial's record if it names lockID.
+func (r *CommandRouter) takeRelayRecord(serial, lockID string) *relayRecord {
+	v, ok := r.relayLocks.Load(serial)
+	if !ok {
+		return nil
+	}
+	rec := v.(*relayRecord)
+	if rec.lockID != lockID || !r.relayLocks.CompareAndDelete(serial, rec) {
+		return nil
+	}
+	return rec
+}
+
 // ServeRelay answers the orchestrator's relay_open for one of this proxy's
 // devices: joins the owner half of the tunnel, waits out any reset of the
-// phone, opens the device through the local device source, and pumps until
-// either side ends. Failures before joining are reported as relay_failed and
+// phone, snapshots its packages if this lock hasn't yet, opens the device
+// through the local device source, and pumps until either side ends. Failures before joining are reported as relay_failed and
 // a failure to open the device as a FAIL in the tunnel, so either way the
 // holder's client gets a FAIL.
 func (r *CommandRouter) ServeRelay(open *pb.RelayOpen) {
@@ -242,7 +309,7 @@ func (r *CommandRouter) ServeRelay(open *pb.RelayOpen) {
 	}
 	// Before the wait below: a reset either sees this and leaves the phone
 	// alone, or already holds the serial's lock and this relay waits for it.
-	r.relayLocks.Store(open.Serial, open.LockId)
+	rec := r.relayRecordFor(open.Serial, open.LockId)
 	octx, ocancel := context.WithCancel(metadata.NewOutgoingContext(context.Background(), metadata.Pairs("x-api-key", r.apiKey)))
 	defer ocancel()
 	stream, err := r.orchClient.Tunnel(octx)
@@ -274,8 +341,14 @@ func (r *CommandRouter) ServeRelay(open *pb.RelayOpen) {
 	}
 	// The tunnel may have died during that wait (its lock ended, say); its
 	// command must not reach the phone.
-	if err := tun.failed(); err != nil {
-		fail(errText(err))
+	tunnelDead := func() bool {
+		err := tun.failed()
+		if err != nil {
+			fail(errText(err))
+		}
+		return err != nil
+	}
+	if tunnelDead() {
 		return
 	}
 	// The holder was accepted when this side joined, so relay_failed would only
@@ -300,6 +373,12 @@ func (r *CommandRouter) ServeRelay(open *pb.RelayOpen) {
 	client, err := r.getOrCreateDSClient(sourceAddr)
 	if err != nil {
 		failInBand(err.Error())
+		return
+	}
+	// After the wait, so a previous guest's apps have gone; before the device
+	// opens, so the first command can't install anything first.
+	rec.takeSnapshot(client, open.Serial)
+	if tunnelDead() { // a reset may be waiting on the snapshot: same reasoning
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())

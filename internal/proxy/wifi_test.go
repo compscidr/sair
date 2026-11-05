@@ -227,7 +227,7 @@ func TestCloseResetsPackagesBeforeWifiAndLogsIt(t *testing.T) {
 		calls = append(calls, serial+" unreverse")
 		return nil
 	}
-	m.resetPackages = func(serial string) ([]string, []string, error) {
+	m.resetPackages = func(serial string, _ *dspb.PackageSnapshot) ([]string, []string, error) {
 		calls = append(calls, serial+" packages")
 		if serial == "B" {
 			return nil, nil, status.Error(codes.Unimplemented, "old device source")
@@ -262,7 +262,7 @@ func TestAcquireCleansUpWhatAnEarlierJobLeft(t *testing.T) {
 	m := NewScopedPortManager(&CommandRouter{orchClient: fake, apiKey: "k"}, nil, 3600)
 	var calls []string
 	m.removeReverse = func(serial string) error { calls = append(calls, "unreverse"); return nil }
-	m.resetPackages = func(serial string) ([]string, []string, error) {
+	m.resetPackages = func(serial string, _ *dspb.PackageSnapshot) ([]string, []string, error) {
 		calls = append(calls, "packages")
 		return []string{"com.example.app"}, nil, nil
 	}
