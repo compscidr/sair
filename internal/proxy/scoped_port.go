@@ -926,8 +926,41 @@ func (m *ScopedPortManager) CloseScopedPort(lockID string) bool {
 	slog.Info("closed scoped port", "port", sp.Port, "lockId", lockID)
 	// Every way a lock ends comes through here, so this is where a device is
 	// put back to baseline: before Release hands it back to the orchestrator.
+	// The lock is heartbeated meanwhile: an uptime reboot can outlast the
+	// orchestrator's idle timeout, which would expire a lock the job released
+	// in time (sair#162).
+	stop, stopped := make(chan struct{}), make(chan struct{})
+	go m.beatUntil(sp.LockID, stop, stopped)
 	m.resetDevices(sp)
+	close(stop)
+	<-stopped
 	return true
+}
+
+// beatUntil heartbeats lockID every heartbeat interval until stop is closed
+// or the orchestrator says the lock is gone, then closes stopped.
+func (m *ScopedPortManager) beatUntil(lockID string, stop <-chan struct{}, stopped chan<- struct{}) {
+	defer close(stopped)
+	beat := time.NewTicker(time.Duration(m.heartbeatIntervalSecs) * time.Second)
+	defer beat.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-beat.C:
+			if alive, _, err := m.commandRouter.LockHeartbeat(lockID, nil); err == nil && !alive {
+				return
+			}
+		}
+	}
+}
+
+// Holds reports whether this proxy has a scoped port open for lockID.
+func (m *ScopedPortManager) Holds(lockID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.scopedPorts[lockID]
+	return ok
 }
 
 // OnLockExpired is the session's callback: the orchestrator released the lock,
