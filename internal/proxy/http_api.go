@@ -324,12 +324,18 @@ func (a *HTTPApi) handleRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	released := a.scopedPortManager.Release(lockID, r.URL.Query().Get("status"))
+	released, err := a.scopedPortManager.Release(lockID, r.URL.Query().Get("status"))
 	if released {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "released"})
-	} else {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown lock_id"})
+		return
 	}
+	// The orchestrator's NotFound says why a lock ended (e.g. a proxy
+	// restart), which this proxy may not remember.
+	msg := "unknown lock_id"
+	if st, ok := status.FromError(err); ok && st.Code() == codes.NotFound {
+		msg = st.Message()
+	}
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": msg})
 }
 
 // Label caps, per request. The orchestrator stores what it is sent, so the
