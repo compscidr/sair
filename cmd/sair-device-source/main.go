@@ -111,7 +111,16 @@ func main() {
 		<-sigCh
 		slog.Info("shutting down gRPC server")
 		close(stopReport)
-		server.GracefulStop()
+		// GracefulStop waits for every open RPC, and the proxy holds adb
+		// tunnel streams open for the length of a lock, so bound the wait.
+		done := make(chan struct{})
+		go func() { server.GracefulStop(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			slog.Warn("streams still open after 5s, stopping gRPC server")
+			server.Stop()
+		}
 	}()
 
 	slog.Info("DeviceSource server listening", "port", port, "proxy", proxyAddr)
