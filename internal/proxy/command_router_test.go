@@ -20,6 +20,7 @@ type fakeOrchClient struct {
 	pb.OrchestratorClient
 	lastAcquire *pb.AcquireLockRequest
 	lastRelease *pb.ReleaseLockRequest
+	releaseErr  error // ReleaseLock's answer when set
 	lastLabels  *pb.AddLockLabelsRequest
 	resp        *pb.AcquireLockResponse
 	err         error
@@ -58,6 +59,9 @@ func TestCheckKeyAsksTheOrchestrator(t *testing.T) {
 
 func (f *fakeOrchClient) ReleaseLock(ctx context.Context, in *pb.ReleaseLockRequest, opts ...grpc.CallOption) (*pb.ReleaseLockResponse, error) {
 	f.lastRelease = in
+	if f.releaseErr != nil {
+		return nil, f.releaseErr
+	}
 	return &pb.ReleaseLockResponse{Released: true}, nil
 }
 

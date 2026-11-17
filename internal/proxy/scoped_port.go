@@ -885,7 +885,9 @@ func (m *ScopedPortManager) CreateScopedPort(lockID string, serials map[string]s
 }
 
 // Release closes a scoped port and releases the lock on the orchestrator.
-func (m *ScopedPortManager) Release(lockID, status string) bool {
+// err is the orchestrator's refusal; for a lock it already ended, NotFound
+// says why (e.g. this proxy restarted and released it, sair#167).
+func (m *ScopedPortManager) Release(lockID, status string) (bool, error) {
 	m.mu.Lock()
 	sp := m.scopedPorts[lockID]
 	m.mu.Unlock()
@@ -899,9 +901,9 @@ func (m *ScopedPortManager) Release(lockID, status string) bool {
 	released, err := m.commandRouter.ReleaseLock(lockID, status, entries)
 	if err != nil {
 		slog.Warn("failed to release lock on orchestrator", "lockId", lockID, "error", err)
-		return closed
+		return closed, err
 	}
-	return closed || released
+	return closed || released, nil
 }
 
 // CloseScopedPort closes a scoped port without releasing the orchestrator lock.

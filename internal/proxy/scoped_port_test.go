@@ -123,7 +123,7 @@ func TestScopedPortReleaseWaitsForInFlightFlushBeforeDraining(t *testing.T) {
 	<-flushStarted // the flush goroutine is now mid-SendLockLog, holding the drained entry
 
 	releaseDone := make(chan bool, 1)
-	go func() { releaseDone <- m.Release("lock-1", "success") }()
+	go func() { ok, _ := m.Release("lock-1", "success"); releaseDone <- ok }()
 	time.Sleep(20 * time.Millisecond)
 	if rel := f.release(); rel != nil {
 		t.Fatalf("Release drained before the in-flight flush finished: %+v", rel)

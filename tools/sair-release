@@ -75,20 +75,23 @@ fi
 
 # POST /release — proxy closes scoped port and releases orchestrator lock
 echo "sair-release: releasing lock ${LOCK_ID}..." >&2
-HTTP_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+RESPONSE=$(curl -s -w '\n%{http_code}' -X POST \
     -H "x-api-key: ${API_KEY}" \
     -G --data-urlencode "lock_id=${LOCK_ID}" --data-urlencode "status=${STATUS}" \
     "${PROXY_URL}/release") || {
     echo "sair-release: ERROR: failed to contact proxy" >&2
     exit 1
 }
+HTTP_STATUS=${RESPONSE##*$'\n'}
+# The proxy's {"error": "..."}: for a lock already gone, why it ended.
+REASON=$(printf '%s' "${RESPONSE%$'\n'*}" | sed -n 's/.*"error":"\([^"]*\)".*/\1/p')
 
 case "${HTTP_STATUS}" in
     200|204)
         echo "sair-release: released" >&2
         ;;
     404|410)
-        echo "sair-release: WARNING: lock not found (may have already expired)" >&2
+        echo "sair-release: WARNING: lock already gone: ${REASON:-not found (may have already expired)}" >&2
         ;;
     *)
         echo "sair-release: ERROR: failed to release lock (HTTP ${HTTP_STATUS})" >&2

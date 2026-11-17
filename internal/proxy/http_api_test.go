@@ -564,3 +564,31 @@ func TestHTTPApiBluetoothDeviceToken(t *testing.T) {
 		t.Errorf("resets = %q, want %q", calls, want)
 	}
 }
+
+// A lock this proxy no longer holds (it restarted mid-job) answers with the
+// orchestrator's reason, not a bare unknown lock_id (sair#167).
+func TestHTTPApiReleaseSaysWhyTheLockEnded(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"ended", status.Error(codes.NotFound, "ended: the proxy restarted"), "ended: the proxy restarted"},
+		{"orchestrator unreachable", status.Error(codes.Unavailable, "down"), "unknown lock_id"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			router := &CommandRouter{orchClient: &fakeOrchClient{releaseErr: tt.err}, apiKey: "test-key"}
+			api := &HTTPApi{apiKey: "test-key", scopedPortManager: NewScopedPortManager(router, nil, 0)}
+			req := httptest.NewRequest("POST", "/release?lock_id=gone", nil)
+			req.Header.Set("x-api-key", "test-key")
+			w := httptest.NewRecorder()
+			api.handleRelease(w, req)
+
+			var resp map[string]string
+			json.Unmarshal(w.Body.Bytes(), &resp)
+			if w.Code != http.StatusNotFound || resp["error"] != tt.want {
+				t.Errorf("got %d %q, want 404 %q", w.Code, resp["error"], tt.want)
+			}
+		})
+	}
+}
