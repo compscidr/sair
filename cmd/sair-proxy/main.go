@@ -77,6 +77,12 @@ func main() {
 	scopedPortManager.DeviceAPIPort = httpAPIPort
 	scopedPortManager.IdleTimeout = time.Duration(envInt64("LOCK_IDLE_TIMEOUT_MINUTES", 20)) * time.Minute
 	commandRouter.ResolveSource = deviceListTracker.GetSourceAddr
+	// The release reset only checks uptime on phones that get acquired.
+	go func() {
+		for range time.Tick(time.Hour) {
+			scopedPortManager.RebootIdle()
+		}
+	}()
 
 	// Long-lived stream to the orchestrator: identity, device reports, heartbeats
 	// and live logs. Falls back to the unary calls against an older orchestrator.

@@ -604,25 +604,9 @@ func (m *ScopedPortManager) resetDevice(sp *ScopedPort, serial string) {
 	// Reboot before the Wi-Fi reset: a fresh boot has nothing to forget, so
 	// the offline wait is not spent twice (sair#93). The serial lock is held
 	// throughout, so the next acquire of this phone waits for the boot.
-	start := time.Now()
-	rebooted, uptime, err := m.rebootIfStale(serial)
-	reboot := &pb.BenchEvent{Kind: pb.BenchEventKind_BENCH_EVENT_KIND_REBOOT, Serial: serial, LockId: lockID, Outcome: "ok"}
-	switch c := status.Code(err); {
-	case err == nil && rebooted:
-		slog.Info("rebooted on release: uptime was over the bench limit", "serial", serial, "lockId", lockID, "uptime", uptime)
-		sp.Log.Record(&pb.LockLogEntry{TimestampMs: time.Now().UnixMilli(), Serial: serial, Service: fmt.Sprintf("sair: rebooted after release (uptime %s)", uptime.Round(time.Minute))})
-		m.waitForSource(serial)
-		reboot.Detail = "uptime " + uptime.Round(time.Minute).String()
-		reboot.DurationMs = time.Since(start).Milliseconds()
-		m.event(reboot)
-	case err == nil, c == codes.NotFound, c == codes.Unimplemented:
-	default:
-		slog.Warn("uptime reboot failed; the phone may be mid-boot", "serial", serial, "lockId", lockID, "error", err)
-		reboot.Outcome, reboot.Detail = "failed", errText(err)
-		m.event(reboot)
-		failed = true
-	}
-	err = m.wifiDevice(lockID, serial, dspb.WifiRequest_RESET, "")
+	rebooted, rebootFailed := m.rebootStale(sp, serial, "after release")
+	failed = failed || rebootFailed
+	err := m.wifiDevice(lockID, serial, dspb.WifiRequest_RESET, "")
 	resetFailed := func() bool { return err != nil && !wifiUnmanaged(err) && status.Code(err) != codes.NotFound }
 	if resetFailed() && m.unwedge(sp, serial, "wifi", "") {
 		rebooted = true
@@ -656,6 +640,57 @@ func (m *ScopedPortManager) resetDevice(sp *ScopedPort, serial string) {
 	}
 	if failed {
 		m.logExcerpt(sp, []string{serial})
+	}
+}
+
+// rebootStale is the uptime check (sair#93): reboots serial if it has been
+// up longer than the bench's limit, waits until it is listed again, and
+// records the reboot in sp's lock log. when says where it ran ("after
+// release"). Returns whether it rebooted and whether the check failed. The
+// caller holds the serial's lock, so an acquire of this phone waits for the
+// boot.
+func (m *ScopedPortManager) rebootStale(sp *ScopedPort, serial, when string) (rebooted, failed bool) {
+	start := time.Now()
+	rebooted, uptime, err := m.rebootIfStale(serial)
+	reboot := &pb.BenchEvent{Kind: pb.BenchEventKind_BENCH_EVENT_KIND_REBOOT, Serial: serial, LockId: sp.LockID, Outcome: "ok"}
+	switch c := status.Code(err); {
+	case err == nil && rebooted:
+		slog.Info("rebooted "+when+": uptime was over the bench limit", "serial", serial, "lockId", sp.LockID, "uptime", uptime)
+		sp.Log.Record(&pb.LockLogEntry{TimestampMs: time.Now().UnixMilli(), Serial: serial, Service: fmt.Sprintf("sair: rebooted %s (uptime %s)", when, uptime.Round(time.Minute))})
+		m.waitForSource(serial)
+		reboot.Detail = "uptime " + uptime.Round(time.Minute).String()
+		reboot.DurationMs = time.Since(start).Milliseconds()
+		m.event(reboot)
+	case err == nil, c == codes.NotFound, c == codes.Unimplemented:
+	default:
+		slog.Warn("uptime reboot failed; the phone may be mid-boot", "serial", serial, "lockId", sp.LockID, "error", err)
+		reboot.Outcome, reboot.Detail = "failed", errText(err)
+		m.event(reboot)
+		return false, true
+	}
+	return rebooted, false
+}
+
+// RebootIdle runs the uptime check on every local phone no lock holds
+// (sair#161). The release reset is the only other place it runs, so a phone
+// nobody acquires would stay up for weeks and its next job would get it
+// stale, then pay for the reboot on release. A phone a reset or an acquire
+// is busy with is skipped: that run has the check or owns the phone. A
+// relayed phone is held until its lock's reset settles its relay record.
+func (m *ScopedPortManager) RebootIdle() {
+	for _, d := range m.deviceListTracker.GetDevices() {
+		mu := m.wifiLock(d.Serial)
+		if !mu.TryLock() {
+			continue
+		}
+		_, relayed := m.commandRouter.relayLocks.Load(d.Serial)
+		if !relayed && !m.heldByAnyPort(d.Serial) {
+			// A fresh boot has a fresh Bluetooth stack.
+			if rebooted, _ := m.rebootStale(&ScopedPort{}, d.Serial, "while idle"); rebooted {
+				m.btFresh.Store(d.Serial, true)
+			}
+		}
+		mu.Unlock()
 	}
 }
 
