@@ -238,7 +238,9 @@ you:
   (no `wm`) are verified through their own `mShowingLockscreen` field; a dump
   in a format sair does not know is logged once and treated as unlocked.
 - **Rebooted on release** once its uptime is over `REBOOT_UPTIME_HOURS`
-  (24 by default), while the phone is unacquired: the reset waits for the
+  (24 by default), and by an hourly check on phones nobody holds, so an idle
+  phone is not handed to a job stale (sair#161). Either way it happens while
+  the phone is unacquired: the reset waits for the
   boot and the wake above before the next acquire of that phone can proceed,
   and the phone is not offered while it is down. The lock log gets
   `sair: rebooted after release (uptime …)` and the proxy's `/status` lists
@@ -432,7 +434,7 @@ modification.
 | `BASELINE_PACKAGES` | — | Third-party packages kept on release, comma-separated. Unset: each phone's packages are recorded when first seen, minus installed test-package/target pairs. Set but empty: keep none. Set it explicitly on a bench that was in use before this version. No effect on a relayed lock's reset, which keeps what the phone had before that lock's first relay |
 | `RESET_FORCE_STOP` | `com.android.chrome,com.google.android.gm` | Apps force-stopped on release |
 | `RESET_CLEAR_PACKAGES` | — | Apps whose data is cleared (`pm clear`) on release. Off by default: clearing Chrome on a signed-in phone signs it out |
-| `REBOOT_UPTIME_HOURS` | `24` | Reboot a phone on release once it has been up this long, before the next job gets it. `0` never reboots |
+| `REBOOT_UPTIME_HOURS` | `24` | Reboot a phone on release, or within the hour when idle, once it has been up this long, before the next job gets it. `0` never reboots |
 | `SAIR_LOG_LEVEL` | `info` | `debug` adds per-chunk byte counts for every forward, for tracing a stalled transfer |
 
 A phone left out by `DEVICE_SERIALS` / `EXCLUDE_SERIALS` is never reported,

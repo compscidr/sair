@@ -717,3 +717,34 @@ func TestReleaseHeartbeatsThroughALongReset(t *testing.T) {
 		t.Errorf("release = %+v", rel)
 	}
 }
+
+// The idle sweep runs the uptime check on a phone no lock holds (sair#161),
+// and leaves alone one a local lock holds and one relayed to another proxy.
+func TestRebootIdleSkipsHeldPhones(t *testing.T) {
+	fake := &fakeOrchClient{resp: &pb.AcquireLockResponse{LockId: "L1", Serials: []string{"HELD"}}}
+	cr := &CommandRouter{orchClient: fake, apiKey: "k"}
+	tracker := NewDeviceListTracker(cr)
+	tracker.UpdateDevices("src", "", []*pb.DeviceInfo{{Serial: "IDLE"}, {Serial: "HELD"}, {Serial: "RELAYED"}})
+	m := NewScopedPortManager(cr, tracker, 3600)
+	m.removeReverse = func(string) error { return nil }
+	m.resetPackages = func(string, *dspb.PackageSnapshot) ([]string, []string, error) { return nil, nil, nil }
+	m.wake = func(string) error { return nil }
+	m.setWifi = func(string, dspb.WifiRequest_State, string) error { return nil }
+	m.resetBluetooth = func(string) error { return nil }
+	if _, err := m.Acquire(context.Background(), nil, 0, nil, 0, false, "", false, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	cr.relayLocks.Store("RELAYED", &relayRecord{lockID: "R1"})
+	var checked []string
+	m.rebootIfStale = func(serial string) (bool, time.Duration, error) {
+		checked = append(checked, serial)
+		return true, 300 * time.Hour, nil
+	}
+	m.RebootIdle()
+	if !reflect.DeepEqual(checked, []string{"IDLE"}) {
+		t.Errorf("uptime checked on %q, want only IDLE", checked)
+	}
+	if _, fresh := m.btFresh.Load("IDLE"); !fresh {
+		t.Error("rebooted phone not marked Bluetooth-fresh")
+	}
+}
