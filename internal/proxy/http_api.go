@@ -324,6 +324,15 @@ func (a *HTTPApi) handleRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A lock this proxy holds is the job's no longer: answer now, and reset
+	// the phones (minutes, with an uptime reboot) and hand the lock back to
+	// the orchestrator after (sair#162). The next acquire of a phone waits
+	// for its reset either way.
+	if a.scopedPortManager.Holds(lockID) {
+		go a.scopedPortManager.Release(lockID, r.URL.Query().Get("status"))
+		writeJSON(w, http.StatusOK, map[string]string{"status": "released"})
+		return
+	}
 	released, err := a.scopedPortManager.Release(lockID, r.URL.Query().Get("status"))
 	if released {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "released"})

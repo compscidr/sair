@@ -677,3 +677,43 @@ func TestConnectionAcceptedAsPortClosesIsClosed(t *testing.T) {
 		t.Errorf("client read: err = %v, want EOF", err)
 	}
 }
+
+// stubReset stubs every device call of a release reset; reboot is the uptime
+// reboot step.
+func stubReset(m *ScopedPortManager, reboot func(string) (bool, time.Duration, error)) {
+	m.removeReverse = func(string) error { return nil }
+	m.resetPackages = func(string, *dspb.PackageSnapshot) ([]string, []string, error) { return nil, nil, nil }
+	m.clearUiAutomation = func(string) (string, error) { return "", nil }
+	m.rebootIfStale = reboot
+	m.setWifi = func(string, dspb.WifiRequest_State, string) error { return nil }
+	m.wake = func(string) error { return nil }
+	m.resetBluetooth = func(string) error { return nil }
+	m.holdUpdates = func(string, bool) error { return nil }
+}
+
+// A reset that outlasts the orchestrator's idle timeout (an uptime reboot
+// waiting for the phone) heartbeats the lock, so the job's release is
+// recorded as a release, not an expiry (sair#162).
+func TestReleaseHeartbeatsThroughALongReset(t *testing.T) {
+	f := newFakeSessionServer()
+	m, _ := newManagerOnSession(t, f, 1)
+	stubReset(m, func(string) (bool, time.Duration, error) {
+		time.Sleep(2500 * time.Millisecond)
+		return false, time.Hour, nil
+	})
+	if _, err := m.CreateScopedPort("lock-1", map[string]struct{}{"A": {}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	msgs, _ := f.snapshot()
+	_, before := countKinds(msgs)
+	if _, err := m.Release("lock-1", "success"); err != nil {
+		t.Fatal(err)
+	}
+	msgs, _ = f.snapshot()
+	if _, after := countKinds(msgs); after-before < 2 {
+		t.Errorf("%d heartbeats during a 2.5 s reset with a 1 s interval, want 2", after-before)
+	}
+	if rel := f.release(); rel == nil || rel.Status != "success" {
+		t.Errorf("release = %+v", rel)
+	}
+}

@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -590,5 +591,35 @@ func TestHTTPApiReleaseSaysWhyTheLockEnded(t *testing.T) {
 				t.Errorf("got %d %q, want 404 %q", w.Code, resp["error"], tt.want)
 			}
 		})
+	}
+}
+
+// /release answers once the proxy has the lock back; the reset (here an
+// uptime reboot that hangs) and the orchestrator release follow (sair#162).
+func TestHTTPApiReleaseAnswersBeforeTheReset(t *testing.T) {
+	fake := &fakeOrchClient{resp: &pb.AcquireLockResponse{LockId: "L1", Serials: []string{"A"}}}
+	m := NewScopedPortManager(&CommandRouter{orchClient: fake, apiKey: "test-key"}, nil, 3600)
+	rebooting, proceed := make(chan struct{}), make(chan struct{})
+	stubReset(m, func(string) (bool, time.Duration, error) { return false, time.Hour, nil })
+	if _, err := m.Acquire(context.Background(), nil, 0, nil, 0, false, "", false, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	m.rebootIfStale = func(string) (bool, time.Duration, error) {
+		close(rebooting)
+		<-proceed
+		return false, time.Hour, nil
+	}
+	defer close(proceed)
+	api := &HTTPApi{apiKey: "test-key", scopedPortManager: m}
+	req := httptest.NewRequest("POST", "/release?lock_id=L1&status=success", nil)
+	req.Header.Set("x-api-key", "test-key")
+	w := httptest.NewRecorder()
+	api.handleRelease(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d %s, want 200", w.Code, w.Body)
+	}
+	<-rebooting // the reset runs on after the answer
+	if m.Holds("L1") {
+		t.Error("scoped port still open after release")
 	}
 }
