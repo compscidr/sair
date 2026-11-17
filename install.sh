@@ -27,6 +27,10 @@ while [[ $# -gt 0 ]]; do
             echo "  --dir DIR           Install directory (default: ~/.local/bin)"
             echo "  --systemd           Install all systemd service units (requires sudo, Linux only)"
             echo "  --systemd-adb-only  Install only the ADB server systemd unit (requires sudo, Linux only)"
+            echo ""
+            echo "Files whose content already matches the release are left alone. The last"
+            echo "line of output is 'Result: changed' or 'Result: unchanged' for callers"
+            echo "(e.g. config management) deciding whether to restart services."
             exit 0
             ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
@@ -90,19 +94,21 @@ trap 'rm -rf "$TMP"' EXIT
 curl -fsSL "$URL" -o "${TMP}/${ARCHIVE}"
 tar xzf "${TMP}/${ARCHIVE}" -C "$TMP"
 
-# Install
+# Install only files whose content differs, so a same-version re-run touches
+# nothing and reports "Result: unchanged" (callers restart services on change).
+CHANGED=""
+put() { # put [sudo] MODE SRC DST
+    local sudo=""
+    if [[ "$1" == "sudo" ]]; then sudo="sudo"; shift; fi
+    cmp -s "$2" "$3" && return 0
+    $sudo install -m "$1" "$2" "$3"
+    CHANGED="${CHANGED}  $3"$'\n'
+}
+
 mkdir -p "$INSTALL_DIR"
 for bin in sair-device-source sair-proxy sair-acquire sair-release sair-wifi sair-bluetooth sair-locks sair-label; do
     if [[ -f "${TMP}/${bin}" ]]; then
-        install -m 755 "${TMP}/${bin}" "${INSTALL_DIR}/${bin}"
-    fi
-done
-
-echo ""
-echo "Installed:"
-for bin in sair-device-source sair-proxy sair-acquire sair-release sair-wifi sair-bluetooth sair-locks sair-label; do
-    if [[ -f "${INSTALL_DIR}/${bin}" ]]; then
-        echo "  ${INSTALL_DIR}/${bin}"
+        put 755 "${TMP}/${bin}" "${INSTALL_DIR}/${bin}"
     fi
 done
 
@@ -137,12 +143,12 @@ if [[ "$INSTALL_SYSTEMD" == "true" || "$INSTALL_SYSTEMD_ADB_ONLY" == "true" ]]; 
     # Use systemd files from the release archive (bundled in systemd/ directory)
     for unit in $UNITS; do
         if [[ -f "${TMP}/systemd/${unit}" ]]; then
-            sudo install -m 644 "${TMP}/systemd/${unit}" "/etc/systemd/system/${unit}"
+            put sudo 644 "${TMP}/systemd/${unit}" "/etc/systemd/system/${unit}"
         else
             echo "Warning: ${unit} not found in release archive, skipping" >&2
         fi
-        echo "  /etc/systemd/system/${unit}"
     done
+    UNITS_CHANGED="$CHANGED"
 
     # Install env file templates (don't overwrite existing)
     sudo mkdir -p /etc/sair
@@ -153,15 +159,16 @@ if [[ "$INSTALL_SYSTEMD" == "true" || "$INSTALL_SYSTEMD_ADB_ONLY" == "true" ]]; 
     for env in $ENVS; do
         if [[ ! -f "/etc/sair/${env}" ]]; then
             if [[ -f "${TMP}/systemd/${env}" ]]; then
-                sudo install -m 600 "${TMP}/systemd/${env}" "/etc/sair/${env}"
-                echo "  /etc/sair/${env} (new)"
+                put sudo 600 "${TMP}/systemd/${env}" "/etc/sair/${env}"
             fi
         else
             echo "  /etc/sair/${env} (exists, skipped)"
         fi
     done
 
-    sudo systemctl daemon-reload
+    if [[ "$UNITS_CHANGED" == *"/etc/systemd/system/"* ]]; then
+        sudo systemctl daemon-reload
+    fi
     echo ""
     echo "Systemd units installed. Enable with:"
     if [[ "$INSTALL_SYSTEMD_ADB_ONLY" == "true" && "$INSTALL_SYSTEMD" == "false" ]]; then
@@ -172,4 +179,14 @@ if [[ "$INSTALL_SYSTEMD" == "true" || "$INSTALL_SYSTEMD_ADB_ONLY" == "true" ]]; 
     fi
     echo ""
     echo "Edit /etc/sair/*.env to configure."
+fi
+
+echo ""
+if [[ -n "$CHANGED" ]]; then
+    echo "Updated:"
+    printf '%s' "$CHANGED"
+    echo "Result: changed"
+else
+    echo "Already at ${VERSION}, nothing to do."
+    echo "Result: unchanged"
 fi
